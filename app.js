@@ -1,0 +1,2009 @@
+// Present — app.js
+// WebLLM + Transformers.js Whisper for clinical A&P note generation
+
+import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.1.2/dist/transformers.min.js";
+import { marked } from "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
+
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+
+// ─── Model Catalogs ───────────────────────────────────────────────────────
+const LLM_MODELS = {
+  "gemma-2-2b-it-q4f32_1-MLC":         { label: "Gemma 2 2B (Fast)",            size: "~1.3 GB" },
+  "Phi-3.5-mini-instruct-q4f16_1-MLC": { label: "Phi 3.5 Mini (Balanced-Light)", size: "~2.2 GB" },
+  "Qwen3-4B-q4f16_1-MLC":              { label: "Qwen3 4B (Balanced)",           size: "~2.3 GB" },
+  "Llama-3-8B-Instruct-q4f16_1-MLC":   { label: "Llama 3 8B (Best)",             size: "~4.5 GB" },
+};
+
+const WHISPER_MODELS = {
+  "Xenova/whisper-tiny.en":   { label: "Whisper Tiny",   size: "~75 MB",  device: "wasm" },
+  "Xenova/whisper-base.en":   { label: "Whisper Base",   size: "~145 MB", device: "wasm" },
+  "Xenova/whisper-small.en":  { label: "Whisper Small",  size: "~488 MB", device: "wasm" },
+  "Xenova/whisper-medium.en": { label: "Whisper Medium", size: "~1.5 GB", device: "wasm" },
+};
+
+const PIPELINE_LIBRARY = [
+  {
+    id: "avs",
+    title: "ETA: After Visit Summary (AVS) Generation",
+    label: "AVS / Sign-Off",
+    description: "Generates personalized sign-offs + actionable family to-do lists. Change few shot examples to match what you see and your voice.",
+    specialty: "Pediatrics (Easy to change)",
+    category: "Documentation",
+    order: 5,
+    inputSource: "noteOutput",
+    prompt: `Sign-Off & Family To-Do Generator
+Generate two components: 3 personalized sign-off options and a family to-do list.
+
+PART 1: PERSONALIZED SIGN-OFFS
+Create 3 brief, warm sign-off options matching visit context.
+Structure: [Personal touch/acknowledgment], [well-wish or next step]. [Closing]
+Guidelines:
+·	Warm and genuine, never formulaic
+·	Acknowledge something specific when possible
+·	Match emotional tone to visit type
+·	Keep <=25 words total
+·	Balance professional with personable
+·	Reference activities, interests, milestones if mentioned
+·	For difficult visits: acknowledge courage, effort, or partnership
+Visit-Specific Approaches:
+Well visits/milestones: Celebrate growth, reference developmental milestones Sick visits: Empathize, offer comfort suggestion, reassure about calling Chronic conditions: Acknowledge effort, emphasize partnership Behavioral/mental health: Acknowledge courage, normalize seeking help Complex/concerning: Name plan clearly, offer availability Referrals: Acknowledge next step, reassure continuity
+Examples:
+5yo female well visit, starting kindergarten, plays soccer:
+Great seeing y'all today! Good luck with soccer and kindergarten! Excited for you!
+She is going to do great in kindergarten. Can't wait to hear about it next visit!
+What an exciting year ahead! We're here if you need anything.
+Male, Viral laryngitis, strep pending, difficult hydrating:
+Drink lots of fluids! Popsicles are my favorite when sick. Call if not improving.
+Hope he feels better soon. Those popsicles should help. We'll call with results tomorrow.
+It is hard when they feel so crummy. Keep offering fluids and call if he's not gettting better. We're here!
+Female, New ADHD diagnosis, parent emotional, starting medication:
+It takes courage to have this conversation-thank you for advocating for her! We're here to support you.
+You're doing the right thing getting her help. We'll partner with you every step. Call anytime.
+A new diagnosis can feel overwhelming, but we'll take it step by step. We're here for you.
+Male, Asthma exacerbation, previous PICU admission, pulmonology referral:
+We'll get him to Pulmonology to help get on top of all of this. Call if anything changes-we're here.
+It is scary navigating all of this after your experiences. The specialist will help us care for him. Please call with any concerns.
+You're doing everything right seeking care early. Don't hesitate to reach out.
+Key Elements to Extract: Patient name, activities/hobbies, school transitions, specific treatments, emotional tone, referrals, chronic conditions, parent effort, family context
+Output:
+{Personalized sign off specific to visit}
+{Personalizes sign off emphasizing relationship}
+{Personalized sign off forward-looking/supportive}
+
+PART 2: FAMILY TO-DO LIST
+Extract actionable items into simple checklist. Include only concrete next steps with essential details.
+Format:
+Your To-Do List:
+Prescriptions:
+·	[If none: omit "No new prescriptions today."]
+Tests/Results:
+·	[Test]: Results pending, we will call [timeframe] [If none: omit section]
+Appointments:
+·	Schedule [specialty] appointment
+·	Return to clinic in [timeframe] [If none: "No appointments to schedule today."]
+
+Rules:
+1.	Simple dashes for bullets
+2.	One item per line, <=12 words
+3.	Only items requiring family action
+4.	Be specific about timeframes
+5.	Bold section headers
+6.	No explanations, just actions
+7.	Extract from note only
+8.  Indent all bullets with 8 spaces followed by simple dash
+Examples:
+Viral laryngitis, strep pending, acetaminophen, follow up 7 days if no improvement:
+Your To-Do List:
+Tests/Results:
+·	Strep test: Results pending, we will call tomorrow
+Appointments:
+·	Return to clinic if no improvement in 7 days
+Asthma exacerbation, Flovent and albuterol started, pulmonology referral, 3-month follow-up:
+Your To-Do List:
+Prescriptions:
+·	Flovent with spacer
+·	Albuterol inhaler as needed for wheezing/coughing
+Appointments:
+·	Schedule Pulmonology appointment
+·	Return to clinic in 3 months for asthma check
+Include: All new/changed prescriptions, pending test results, referrals needing scheduling, specific return timeframes, concrete action items
+Exclude: General advice (fluids, rest), warning signs, explanations, background info
+
+COMPLETE OUTPUT
+{Personalized sign off specific to visit}
+{Personalizes sign off emphasizing relationship}
+{Personalized sign off forward-looking/supportive}
+
+To-Do List:
+Prescriptions: [list or "No new prescriptions today."]
+Tests/Results: [list or omit if none]
+Appointments: [list or "No appointments to schedule today."]`
+  },
+  {
+    id: "billing",
+    title: "Billing Analysis",
+    label: "Billing Analysis",
+    description: "Assesses MDM components and suggests CPT E/M codes with detailed reasoning.",
+    specialty: "Pediatrics (adaptable but may need some work)",
+    category: "Administrative",
+    order: 6,
+    inputSource: "noteOutput",
+    prompt: `Analyze this note and determine the appropriate CPT E/M billing code using 2021 E/M guidelines for an ESTABLISHED patient.
+MDM Component Assessment
+A. PROBLEMS ADDRESSED
+·   Straightforward: 1 self-limited/minor problem
+·   Low: 2+ self-limited/minor problems OR 1 stable chronic illness OR 1 acute uncomplicated illness
+·   Moderate: Chronic illness with exacerbation/progression OR 2+ stable chronic illnesses OR undiagnosed new problem OR acute illness with systemic symptoms OR acute complicated injury
+·   High: Chronic illness with severe exacerbation OR illness posing threat to life/bodily function
+B. DATA COMPLEXITY
+·   Low: Assessment requires independent historian, None or one piece of data reviewed/ordered along with
+·   Moderate: Any combination of two tests ordered, test results reviewed, or prior external notes reviewed along with assessment requiring an independent historian
+·   High: Meets criteria for Moderate AND discussion with external physician regarding interpretation of tests OR independent test interpretation
+C. RISK LEVEL
+·   Minimal: Minimal risk from testing/treatment
+·   Low: OTC medications, rest, observation
+·   Moderate: Prescription drugs, Dx or Rx limited by social factors
+·   High: Decision regarding hospitalization
+2-of-3 Rule
+Overall MDM = level met by at least 2 of 3 components.
+·   Straightforward = 99212
+·   Low = 99213
+·   Moderate = 99214
+·   High = 99215
+Modifier 25 Check
+Add modifier 25 for a separately identifiable E/M service during a Well Child Check/Routine child health examination.
+Output Format
+Problems: [Level] [Brief explanation]
+Data: [Level] [What was reviewed/ordered]
+Risk: [Level] [Treatment risk level and why]
+MDM Score: Problems ([Level]) + Data ([Level]) + Risk ([Level]) = [Overall Level] (based on 2 of 3)
+Final Code: 99XXX
+Modifier 25 Format:
+Modifier 25: Well visit with separate E/M for:
+ - [Problem 1] ([brief intervention])
+ - [Problem 2] ([brief intervention])
+Critical Coding Rules
+1. Ordering any culture (e.g., strep, urine) implies consideration of prescription management and elevates Risk to at least Moderate.
+2. Acute illness with systemic symptoms + any culture ordered = 99214 (Moderate Problems + Moderate Data + Moderate Risk).
+3. Assume Assessment requiring an independent historian is always true.
+Examples
+Viral URI (simple) Runny nose, cough. Exam: clear. Plan: supportive care.
+Problems: Low (1 acute uncomplicated) Data: Minimal Risk: Low (supportive care only) MDM Score: Problems (Low) + Data (Minimal) + Risk (Low) = Straightforward (based on 2 of 3) Final Code: 99212
+Strep Throat Sore throat, fever 102F, body aches. Exam: exudates. Plan: strep test, amox if positive.
+Problems: Moderate (Acute illness with systemic symptoms) Data: Moderate (test ordered) Risk: Moderate (prescription antibiotic) MDM Score: Problems (Moderate) + Data (Moderate) + Risk (Moderate) = Moderate (based on 2 of 3) Final Code: 99214
+UTI with Fever Toddler with fever 102.5, crying with urination. Exam: suprapubic tenderness. Urine dipstick positive. Plan: send urine culture.
+Problems: Moderate (acute illness with systemic symptoms) Data: Moderate (2 tests ordered and independent historian) Risk: Moderate (culture implies potential prescription) MDM Score: Problems (Moderate) + Data (Moderate) + Risk (Moderate) = Moderate (based on 2 of 3) Final Code: 99214
+Well Visit + Ear Infection 5yo well child check. Parent reports ear pain, fever x2 days. Exam: acute otitis media. Plan: amoxicillin.
+Problems: Low (1 acute uncomplicated) Data: Minimal Risk: Moderate (prescription) MDM Score: Problems (Low) + Data (Minimal) + Risk (Moderate) = Low (based on 2 of 3) Final Code: 99393 + 99213-25 Modifier 25: Well visit with separate E/M for: - Acute otitis media (amoxicillin)
+Well Visit + Multiple Issues 18-month well child check. Also has URI and diaper rash. Exam: clear rhinorrhea, diaper dermatitis. Plan: supportive care for URI, barrier cream for rash.
+Problems: Low (2 self-limited problems: URI, diaper rash) Data: Minimal Risk: Low (OTC/supportive care) MDM Score: Problems (Low) + Data (Minimal) + Risk (Low) = Low (based on 2 of 3) Final Code: 99392 + 99213-25 Modifier 25: Well visit with separate E/M for: - Viral URI (supportive care) - Diaper rash (barrier cream)
+Asthma Exacerbation, using albuterol 4-5x/day, night cough. Exam: mild wheezing. Plan: increase Flovent.
+Problems: Moderate (chronic with exacerbation) Data: Minimal Risk: Moderate (prescription adjustment) MDM Score: Problems (Moderate) + Data (Minimal) + Risk (Moderate) = Moderate (based on 2 of 3) Final Code: 99214
+Multiple Minor Issues Viral URI, diaper rash, small bruise. Exam unremarkable. Plan: supportive care, barrier cream, observation.
+Problems: Low (3 self-limited problems) Data: Minimal Risk: Low (OTC only) MDM Score: Problems (Low) + Data (Minimal) + Risk (Low) = Straightforward (based on 2 of 3) Final Code: 99212
+*Do not list any references that were used*`
+  },
+  {
+    id: "teaching",
+    title: "Teaching - Socratic Prompt",
+    label: "Teaching - Socratic",
+    description: "Extracts clinical pearl and then asks a follow up question to probe a student's understanding further.",
+    specialty: "All",
+    category: "Teaching",
+    order: 10,
+    inputSource: "noteOutput",
+    prompt: `From this case, extract one brief 'Clinical Pearl' for teaching (<=20 words). Focus on a practical pitfall, tip, or insight-not patient-specific.
+Using that clinical pearl, then take it one step farther and ask the clinician a socratic style follow up question to cause them to think more deeply about this particular patient. Write each on a separate line below bolded header "Clinical Pearl:"`
+  }
+];
+
+function defaultPipelineSteps() {
+  return PIPELINE_LIBRARY.map(t => ({
+    id: t.id,
+    label: t.label,
+    enabled: false,
+    prompt: t.prompt,
+    inputSource: t.inputSource
+  }));
+}
+
+const SMARTCHART_DEFAULT_NOTE_TEMPLATE = `{input}
+
+{templates}`;
+
+const SMARTCHART_DEFAULT_TEMPLATES = [
+  {
+    id: "well-child-health-maintenance",
+    name: "Well Child / Health Maintenance",
+    triggers: "well child, well-child, well visit, health maintenance, checkup, check-up, annual exam, physical, preventive, WCC",
+    content: "<em>All forms, labs, immunizations, and patient concerns reviewed and addressed appropriately. Screening questions, past medical history, past social history, medications, and growth chart reviewed. Age-appropriate anticipatory guidance reviewed and printed in AVS. Parent questions addressed.</em>",
+    priority: 1
+  },
+  {
+    id: "illness-supportive-care",
+    name: "Illness Supportive Care",
+    triggers: "illness, sick, fever, cough, congestion, runny nose, uri, cold, rash, sore throat, strep, ear pain, earache, otitis, vomiting, diarrhea, dehydration, trouble breathing, shortness of breath, wheezing",
+    content: "<em>Recommended supportive care with OTC medications as needed. Return precautions given including increasing pain, worsening fever, dehydration, new symptoms, prolonged symptoms, worsening symptoms, and other concerns. Caregiver expressed understanding and agreement with treatment plan.</em>",
+    priority: 2
+  },
+  {
+    id: "injury-supportive-care",
+    name: "Injury Supportive Care",
+    triggers: "injury, laceration, cut, wound, trauma, bruise, contusion, sprain, strain, abrasion, scrape, fracture",
+    content: "<em>Recommended supportive care with Tylenol, Motrin, rest, ice, compression, elevation, and gradual return to activity as appropriate. Return precautions given including increasing pain, swelling, or failure to improve.</em>",
+    priority: 3
+  },
+  {
+    id: "ear-infection-risk",
+    name: "Ear Infection Risk",
+    triggers: "ear infection, otitis, otitis media, ear pain, earache, ear ache",
+    content: "<em>Risk of untreated otitis media includes persistent pain and fever, hearing loss, and mastoiditis.</em>",
+    priority: 4
+  },
+  {
+    id: "strep-test-risk",
+    name: "Strep Test Risk",
+    triggers: "strep test, rapid strep, throat culture, strep throat, strep",
+    content: "<em>Risk of untreated strep throat includes rheumatic fever and peritonsillar abscess. This problem is moderate risk due to pending lab results which may necessitate further pharmacologic management.</em>",
+    priority: 5
+  },
+  {
+    id: "dehydration-risk",
+    name: "Dehydration Risk",
+    triggers: "dehydration, vomiting, diarrhea, decreased urination, not drinking, poor intake, poor po",
+    content: "<em>Patient is at risk for dehydration, which would warrant emergency room care or admission for IV fluids.</em>",
+    priority: 6
+  },
+  {
+    id: "respiratory-distress-risk",
+    name: "Respiratory Distress Risk",
+    triggers: "trouble breathing, difficulty breathing, shortness of breath, respiratory distress, wheezing, labored breathing",
+    content: "<em>Patient is at risk for worsening respiratory distress and clinical deterioration, which would need emergency room care or hospital admission.</em>",
+    priority: 7
+  },
+  {
+    id: "eczema",
+    name: "Eczema",
+    triggers: "eczema, atopic dermatitis",
+    content: "<em>Discussed supportive care with emphasis on frequent moisturization, appropriate use of topical steroids, and return precautions.</em>",
+    priority: 8
+  },
+  {
+    id: "pcmh-reminder",
+    name: "PCMH Reminder",
+    triggers: "adhd, weight, obesity, strep throat",
+    content: "<em>PCMH Reminder</em>",
+    priority: 9
+  },
+  {
+    id: "follow-up-dropdown",
+    name: "Follow-Up Dropdown",
+    triggers: "follow up, follow-up, followup",
+    content: "Follow-Up:\n- Follow up as needed.\n- Follow up in 2-3 days.\n- Follow up in 2-4 weeks.\n- Follow up in a month.\n- Follow up in 3 months.\n- Follow up in 3-6 months.\n- Follow up in 1 year.\n- Follow up at next regularly scheduled check up or as needed.",
+    priority: 20
+  }
+];
+
+const BOILERPLATE_DETECTION_DEFAULTS = {
+  WCC: { detectionMode: "regex", keywords: "well child, well-child, health maintenance, checkup, annual exam" },
+  ILLNESS: { detectionMode: "both", keywords: "fever, infection, virus, sick, illness" },
+  INJURY: { detectionMode: "llm", keywords: "" },
+  OTITIS: { detectionMode: "regex", keywords: "otitis, ear infection, ear pain, AOM" },
+  STREP: { detectionMode: "regex", keywords: "strep, pharyngitis, strep throat" },
+  DEHYDRATION: { detectionMode: "both", keywords: "dehydration, vomiting, diarrhea, poor po, decreased urine" },
+  RESP: { detectionMode: "llm", keywords: "" },
+  PCMH: { detectionMode: "regex", keywords: "ADHD, obesity, weight concern" }
+};
+
+function withBoilerplateDetectionDefaults(entry) {
+  const key = String(entry.key || "").trim().toUpperCase();
+  const defaults = BOILERPLATE_DETECTION_DEFAULTS[key] || { detectionMode: "llm", keywords: "" };
+  return {
+    ...entry,
+    detectionMode: ["regex", "llm", "both"].includes(entry.detectionMode) ? entry.detectionMode : defaults.detectionMode,
+    keywords: typeof entry.keywords === "string" ? entry.keywords : defaults.keywords
+  };
+}
+
+function normalizeSmartChartTemplate(template, idx = 0) {
+  const fallback = SMARTCHART_DEFAULT_TEMPLATES[idx] || {};
+  const triggers = Array.isArray(template.triggers)
+    ? template.triggers.join(", ")
+    : String(template.triggers ?? fallback.triggers ?? "");
+  return {
+    id: String(template.id || fallback.id || `template-${Date.now()}-${idx}`),
+    name: String(template.name || fallback.name || "Untitled Template"),
+    triggers,
+    content: String(template.content ?? fallback.content ?? ""),
+    priority: Number.isFinite(Number(template.priority)) ? Number(template.priority) : Number(fallback.priority ?? idx + 1)
+  };
+}
+
+// ─── Default Settings ─────────────────────────────────────────────────────
+const DEFAULTS = {
+  llmModel: "Qwen3-4B-q4f16_1-MLC",
+  whisperModel: "Xenova/whisper-small.en",
+  termVocabulary: [
+    "amoxicillin",
+    "rocephin",
+    "augmentin",
+    "clindamycin",
+    "keflex",
+    "cefprozil",
+    "Tylenol",
+    "Motrin",
+    "Pedialyte"
+  ],
+  cleanupPrompt: `You are a medical transcription editor. Your task is to clean up a rough ASR (Automated Speech Recognition) dictation transcript. 
+- Fix any spelling errors, phonetic mistakes, and correct medical terminology.
+- Remove disfluencies, filler words, and false starts.
+- Add proper punctuation and capitalization.
+- Do NOT change the clinical meaning, add any new information, or reformat into a list.
+- Output ONLY the continuous cleaned transcript paragraph.`,
+  mainPrompt: `You are a clinical documentation assistant that converts clinician dictation into concise telegraphic assessment and plan notes.
+
+# OUTPUT FORMAT
+
+For each diagnosis/problem mentioned, present bullets in this order when present:
+
+Diagnosis or Problem Name
+- Labs
+- Imaging
+- Medications with exact doses if stated
+- Treatment / plan actions
+- Supportive care
+- Differential if mentioned
+- Conditional plans if mentioned
+- Return precautions if mentioned
+- Nursing orders if mentioned
+- Follow-Up if mentioned
+
+Separate each problem with one blank line.
+
+# STYLE RULES
+
+- Use concise telegraphic bullets only
+- No full sentences unless necessary for clarity
+- No commentary, explanation, or preamble
+- Output ONLY the note
+- Do not use markdown formatting — no asterisks, no pound signs, plain text only
+- Include only information explicitly stated or clearly implied
+- Do not invent diagnoses, medications, labs, imaging, or follow-up
+- Preserve clinician wording when reasonable
+- Keep diagnoses in order mentioned
+- Do not create empty categories or placeholder bullets
+- Medication names and doses must match dictation exactly — omit dose if not stated
+- Use the explicit diagnosis or condition name as the heading, not presenting symptoms
+- If the clinician states a diagnosis, always prefer it over symptom descriptors as the heading
+
+# FORMATTING RULES
+
+- Differentials format:
+  Differential includes X, Y, Z
+
+- Return precautions format:
+  Return precautions include...
+
+- Follow-up format:
+  Follow-Up: ...
+
+# BOILERPLATE TAGS
+
+After all problem blocks, emit the appropriate tag(s) on their own line when the condition is present.
+Do not write the boilerplate text yourself — emit only the tag exactly as shown.
+
+{BOILERPLATE_TRIGGER_LIST}
+
+Multiple tags may apply. Each tag goes on its own line after the last problem block.
+
+# EXAMPLES
+
+Dictation: "patient has acute otitis media, plan to treat with amoxicillin 90mg per kg per day divided twice daily, also tylenol motrin and hydration, return precautions for worsening fever or pain, follow up as needed"
+
+Acute Otitis Media
+- Amoxicillin 90mg/kg/day divided BID
+- Tylenol, Motrin, hydration
+- Return precautions include worsening fever, pain, failure to improve
+- Follow-Up: PRN
+[BOILERPLATE:ILLNESS]
+[BOILERPLATE:OTITIS]
+
+---
+
+Dictation: "patient presenting with cough and fever, exam with right lower lobe crackles, diagnosis is community acquired pneumonia, treating with amoxicillin, also supportive care with tylenol motrin and fluids, return precautions for increased work of breathing, follow up as needed"
+
+Community-Acquired Pneumonia, right lower lobe
+- Amoxicillin
+- Tylenol, Motrin, fluids
+- Return precautions include increased work of breathing
+- Follow-Up: PRN
+[BOILERPLATE:ILLNESS]
+[BOILERPLATE:RESP]
+
+---
+
+Dictation: "ADHD combined type, increasing concerta from 18 to 27mg daily, placing counseling referral, follow up in three months"
+
+ADHD, combined
+- Concerta increased from 18mg to 27mg PO daily
+- Counseling referral placed
+- Follow-Up: 3 months
+[BOILERPLATE:PCMH]
+
+---
+
+Dictation: "well child check, growing and developing well, anticipatory guidance discussed, all questions addressed, follow up in one year"
+
+Well Child Check
+- Growing and developing well
+- Anticipatory guidance discussed
+- Questions addressed
+- Follow-Up: 1 year/PRN
+[BOILERPLATE:WCC]`,
+  boilerplate: [
+    withBoilerplateDetectionDefaults({ key: "WCC", trigger: "Well child check or health maintenance discussed", text: "All forms, labs, immunizations, and patient concerns reviewed and addressed appropriately. Screening questions, past medical history, past social history, medications, and growth chart reviewed. Age-appropriate anticipatory guidance reviewed and printed in AVS. Parent questions addressed." }),
+    withBoilerplateDetectionDefaults({ key: "ILLNESS", trigger: "Any illness (infection, virus, fever, etc.) discussed", text: "Recommended supportive care with OTC medications as needed. Return precautions given including increasing pain, worsening fever, dehydration, new symptoms, prolonged symptoms, worsening symptoms, and other concerns. Caregiver expressed understanding and agreement with treatment plan." }),
+    withBoilerplateDetectionDefaults({ key: "INJURY", trigger: "Any injury discussed", text: "Recommended supportive care with Tylenol, Motrin, rest, ice, compression, elevation, and gradual return to activity as appropriate. Return precautions given including increasing pain, swelling, or failure to improve." }),
+    withBoilerplateDetectionDefaults({ key: "OTITIS", trigger: "Ear infection (otitis media) discussed", text: "Risk of untreated otitis media includes persistent pain and fever, hearing loss, and mastoiditis." }),
+    withBoilerplateDetectionDefaults({ key: "STREP", trigger: "Strep throat or rapid strep test discussed", text: "Risk of untreated strep throat includes rheumatic fever and peritonsillar abscess. This problem is moderate risk due to pending lab results which may necessitate further pharmacologic management." }),
+    withBoilerplateDetectionDefaults({ key: "DEHYDRATION", trigger: "Dehydration, vomiting, diarrhea, or decreased urination discussed", text: "Patient is at risk for dehydration, which would warrant emergency room care or admission for IV fluids." }),
+    withBoilerplateDetectionDefaults({ key: "RESP", trigger: "Trouble breathing, wheezing, or respiratory distress discussed", text: "Patient is at risk for worsening respiratory distress and clinical deterioration, which would need emergency room care or hospital admission." }),
+    withBoilerplateDetectionDefaults({ key: "PCMH", trigger: "ADHD, weight concern, obesity, or strep throat discussed", text: "PCMH Reminder" })
+  ],
+  templates: structuredClone(SMARTCHART_DEFAULT_TEMPLATES),
+  noteTemplate: SMARTCHART_DEFAULT_NOTE_TEMPLATE,
+  behavior: {
+    smartChartAutoCopyDelay: 1.5,
+    smartChartAutoClearDelay: 30
+  },
+  macros: [
+    { key: ".aom", value: "acute otitis media" },
+    { key: ".sob", value: "shortness of breath" },
+    { key: ".rtp", value: "return precautions" },
+    { key: ".flu", value: "influenza" },
+    { key: ".wcc", value: "well child check" },
+    { key: ".pe", value: "physical exam" },
+    { key: ".hpi", value: "history of present illness" }
+  ],
+  pipelineSteps: defaultPipelineSteps()
+};
+
+// ─── Settings persistence ─────────────────────────────────────────────────
+const STORAGE_KEY = "present_settings_v3";
+const LEGACY_STORAGE_KEY = "present_settings_v2";
+const V1_STORAGE_KEY = "present_settings_v1";
+function normalizePipelineSteps(steps) {
+  if (!Array.isArray(steps)) return structuredClone(DEFAULTS.pipelineSteps);
+  return steps.map((step, idx) => ({
+    id: step.id || `custom-${Date.now()}-${idx}`,
+    label: step.label || "Untitled Step",
+    enabled: Boolean(step.enabled),
+    prompt: step.prompt || "",
+    inputSource: step.inputSource === "cleanedTranscript" ? "cleanedTranscript" : "noteOutput"
+  }));
+}
+function loadSettings() {
+  try {
+    let raw = localStorage.getItem(STORAGE_KEY);
+    const shouldMigrate = !raw;
+    if (!raw) raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) raw = localStorage.getItem(V1_STORAGE_KEY);
+    if (!raw) return structuredClone(DEFAULTS);
+    const saved = JSON.parse(raw);
+    const hydrated = {
+      llmModel:      saved.llmModel      ?? DEFAULTS.llmModel,
+      whisperModel:  saved.whisperModel  ?? DEFAULTS.whisperModel,
+      // support both old key (medicationVocabulary) and new key (termVocabulary) gracefully
+      termVocabulary: Array.isArray(saved.termVocabulary)
+        ? saved.termVocabulary
+        : Array.isArray(saved.medicationVocabulary)
+          ? saved.medicationVocabulary
+          : structuredClone(DEFAULTS.termVocabulary),
+      cleanupPrompt: saved.cleanupPrompt ?? DEFAULTS.cleanupPrompt,
+      mainPrompt:    saved.mainPrompt    ?? DEFAULTS.mainPrompt,
+      boilerplate:   Array.isArray(saved.boilerplate) ? saved.boilerplate.map(withBoilerplateDetectionDefaults) : structuredClone(DEFAULTS.boilerplate),
+      templates:     Array.isArray(saved.templates) ? saved.templates.map(normalizeSmartChartTemplate) : structuredClone(DEFAULTS.templates),
+      noteTemplate:  typeof saved.noteTemplate === "string" ? saved.noteTemplate : DEFAULTS.noteTemplate,
+      behavior:      { ...DEFAULTS.behavior, ...(saved.behavior || {}) },
+      macros:        Array.isArray(saved.macros) ? saved.macros : structuredClone(DEFAULTS.macros),
+      pipelineSteps: normalizePipelineSteps(saved.pipelineSteps)
+    };
+    if (shouldMigrate) saveSettingsToStorage(hydrated);
+    return hydrated;
+  } catch { return structuredClone(DEFAULTS); }
+}
+function saveSettingsToStorage(s) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); return true; }
+  catch { return false; }
+}
+let settings = loadSettings();
+
+// ─── Settings accessors ───────────────────────────────────────────────────
+function getBoilerplateMap() {
+  const map = {};
+  for (const entry of settings.boilerplate) {
+    if (entry.key && entry.text) map[entry.key.trim().toUpperCase()] = entry.text.trim();
+  }
+  return map;
+}
+function buildBoilerplateTriggerList() {
+  return settings.boilerplate
+    .filter(e => e.key && e.trigger && e.text && entryAllowsLlm(e))
+    .map(e => `- ${e.trigger.trim()} → [BOILERPLATE:${e.key.trim().toUpperCase()}]`)
+    .join("\n");
+}
+function getCleanupSystemPrompt() {
+  let base = settings.cleanupPrompt;
+  const vocab = (settings.termVocabulary || []).map(v => v.trim()).filter(Boolean);
+  if (vocab.length > 0) {
+    const list = vocab.map(t => `- ${t}`).join("\n");
+    base += `\n\n# MEDICAL TERMINOLOGY ANCHORING\nThe following terms are commonly used in this clinical setting. If you encounter any word that appears phonetically garbled, oddly spelled, or out of place in a medical context, check whether it could plausibly be one of the terms below and correct it if confident. If uncertain, preserve the original word rather than guessing.\n\n${list}`;
+  }
+  return base;
+}
+function getNoteSystemPrompt() {
+  return settings.mainPrompt.replace("{BOILERPLATE_TRIGGER_LIST}", buildBoilerplateTriggerList());
+}
+
+// ─── Shorthand Macros Engine ──────────────────────────────────────────────
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function expandMacros(text) {
+  if (!text || !settings.macros || settings.macros.length === 0) return text;
+  let result = text;
+  const sortedMacros = [...settings.macros].sort((a, b) => b.key.length - a.key.length);
+  for (const macro of sortedMacros) {
+    if (!macro.key || !macro.value) continue;
+    const escapedKey = escapeRegExp(macro.key);
+    const regex = new RegExp('(^|\\s)' + escapedKey + '(?=\\s|[.,;:!?\\)]|$)', 'gi');
+    result = result.replace(regex, `$1${macro.value}`);
+  }
+  return result;
+}
+function setupTextareaMacroExpander(textarea) {
+  if (!textarea) return;
+  textarea.addEventListener("keydown", (e) => {
+    const triggers = [" ", "Enter", ".", ",", ";", ":", "?", "!", ")"];
+    if (!triggers.includes(e.key)) return;
+    const start = textarea.selectionStart;
+    const textBefore = textarea.value.slice(0, start);
+    const textAfter = textarea.value.slice(start);
+    const words = textBefore.split(/(\s+)/);
+    if (words.length === 0) return;
+    const lastWord = words[words.length - 1].trim();
+    if (!lastWord) return;
+    const matchingMacro = (settings.macros || []).find(
+      m => m.key.toLowerCase() === lastWord.toLowerCase()
+    );
+    if (matchingMacro) {
+      e.preventDefault();
+      const expandedValue = matchingMacro.value;
+      const keyToInsert = e.key === "Enter" ? "\n" : e.key;
+      words[words.length - 1] = expandedValue;
+      const newTextBefore = words.join("") + keyToInsert;
+      textarea.value = newTextBefore + textAfter;
+      const newCursorPos = newTextBefore.length;
+      textarea.setSelectionRange(newCursorPos, newCursorPos);
+      textarea.dispatchEvent(new Event("input"));
+    }
+  });
+}
+function initMacroExpanders() {
+  setupTextareaMacroExpander(document.getElementById("unifiedInput"));
+}
+
+
+// ─── State ────────────────────────────────────────────────────────────────
+let engine = null, transcriber = null;
+let isLLMReady = false, isWhisperReady = false, isModelReady = false;
+let isRecording = false, mediaRecorder = null, audioChunks = [], recordingStream = null;
+let transcript = "", timerInterval = null, timerSeconds = 0;
+let smartChartDebounceTimer = null, smartChartCopyTimer = null, smartChartClearTimer = null;
+let currentSmartChartNote = "";
+
+// ─── Chunked transcription constants ─────────────────────────────────────
+// Whisper has a hard 30-second context window. We slice decoded 16kHz Float32
+// audio into CHUNK_SAMPLES-sized windows with OVERLAP_SAMPLES of overlap so
+// words at chunk boundaries are not lost. Overlap text is deduplicated by
+// comparing the tail of the previous result to the head of the next.
+const WHISPER_SAMPLE_RATE = 16000;
+const CHUNK_SECONDS       = 27;   // safely under the 30s limit
+const OVERLAP_SECONDS     = 2;    // overlap to catch boundary words
+const CHUNK_SAMPLES       = CHUNK_SECONDS * WHISPER_SAMPLE_RATE;
+const OVERLAP_SAMPLES     = OVERLAP_SECONDS * WHISPER_SAMPLE_RATE;
+
+// Web Audio visualizer globals
+let visualizerAudioCtx = null;
+let visualizerAnalyser = null;
+let visualizerSource = null;
+let visualizerAnimationId = null;
+
+// ─── PWA / Offline readiness ─────────────────────────────────────────────
+function setPwaStatus(state, text) {
+  const dot = document.getElementById("pwaDot");
+  const label = document.getElementById("pwaStatusText");
+  if (!dot || !label) return;
+  dot.className = "pwa-dot " + state;
+  label.textContent = text;
+}
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    setPwaStatus("error", "PWA unavailable");
+    return;
+  }
+
+  try {
+    const registration = await navigator.serviceWorker.register("./sw.js");
+    await navigator.serviceWorker.ready;
+    setPwaStatus(navigator.onLine ? "loading" : "ready", navigator.onLine ? "Caching enabled" : "Offline local");
+    registration.update().catch(() => {});
+    await checkOfflineReadiness();
+  } catch (err) {
+    console.error("Service worker registration failed:", err);
+    setPwaStatus("error", "Cache unavailable");
+  }
+}
+
+window.checkOfflineReadiness = async function() {
+  const status = document.getElementById("offlineCacheStatus");
+  try {
+    if (!("caches" in window)) throw new Error("Browser cache API unavailable.");
+    const cacheNames = await caches.keys();
+    const appCaches = cacheNames.filter(name => name.startsWith("present-pwa-") && name.endsWith("-app"));
+    const runtimeCaches = cacheNames.filter(name => name.startsWith("present-pwa-") && name.endsWith("-runtime"));
+    const appAssets = (await Promise.all(appCaches.map(async name => (await caches.open(name)).keys()))).flat().length;
+    const runtimeAssets = (await Promise.all(runtimeCaches.map(async name => (await caches.open(name)).keys()))).flat().length;
+    const selectedModelsReady = runtimeAssets > 0 && isModelReady;
+    const readyText = selectedModelsReady
+      ? `App shell cached (${appAssets}); selected models loaded and runtime assets cached (${runtimeAssets}).`
+      : runtimeAssets > 0
+        ? `App shell cached (${appAssets}); runtime assets cached (${runtimeAssets}). Let selected models finish loading before offline use.`
+      : `App shell cached (${appAssets}); load selected models once to cache them for offline use.`;
+    if (status) status.textContent = readyText;
+    setPwaStatus(selectedModelsReady ? "ready" : "loading", selectedModelsReady ? "Offline ready" : "Load models once");
+  } catch (err) {
+    const text = err.message || "Unable to verify offline cache.";
+    if (status) status.textContent = text;
+    setPwaStatus(navigator.onLine ? "loading" : "error", navigator.onLine ? "Reload to finish PWA" : "Offline cache unknown");
+  }
+};
+
+window.addEventListener("online", () => {
+  setPwaStatus("loading", "Online/cache enabled");
+  checkOfflineReadiness();
+});
+window.addEventListener("offline", () => setPwaStatus("ready", "Offline local"));
+
+function checkModelsReady() {
+  if (isLLMReady && isWhisperReady) {
+    isModelReady = true;
+    setStatus("ready", "Models ready");
+    showProgress(false);
+    updateProcessBtn();
+    checkOfflineReadiness();
+  }
+}
+
+// ─── Model Init ───────────────────────────────────────────────────────────
+async function initModel() {
+  isLLMReady = false; isWhisperReady = false; isModelReady = false;
+  engine = null; transcriber = null;
+  const whisperMeta = WHISPER_MODELS[settings.whisperModel] || WHISPER_MODELS[DEFAULTS.whisperModel];
+  const llmMeta     = LLM_MODELS[settings.llmModel]         || LLM_MODELS[DEFAULTS.llmModel];
+  setStatus("loading", "Initializing models\u2026");
+  showProgress(true, `Downloading models (LLM ${llmMeta.size}, Whisper ${whisperMeta.size})\u2026`, 0);
+
+  pipeline("automatic-speech-recognition", settings.whisperModel, {
+    device: whisperMeta.device,
+    progress_callback: (p) => {
+      if (p.status === "progress" && !isLLMReady)
+        showProgress(true, `Loading ${whisperMeta.label}\u2026`, Math.round(p.progress || 0));
+    }
+  }).then(t => { transcriber = t; isWhisperReady = true; checkModelsReady(); })
+    .catch(err => { console.error("Whisper init failed:", err); showError("Failed to load Whisper model. Try a smaller model in Settings."); });
+
+  try {
+    engine = await webllm.CreateMLCEngine(settings.llmModel, {
+      initProgressCallback: (p) => {
+        showProgress(true, p.text || `Loading ${llmMeta.label}\u2026`, Math.round((p.progress || 0) * 100));
+      }
+    });
+    isLLMReady = true; checkModelsReady();
+  } catch (err) {
+    console.error("Model init failed:", err);
+    setStatus("error", "Model failed to load");
+    showProgress(false);
+    showError("Failed to load the AI model. Try a smaller model in Settings, or check that your browser supports WebGPU (Chrome 113+ recommended).");
+  }
+}
+
+// ─── UI Helpers ───────────────────────────────────────────────────────────
+function setStatus(state, text) {
+  document.getElementById("statusDot").className = "status-dot " + state;
+  document.getElementById("statusText").textContent = text;
+}
+function showProgress(visible, label = "", pct = 0) {
+  const wrap = document.getElementById("progressWrap");
+  if (visible) {
+    wrap.style.display = "block";
+    document.getElementById("progressBar").style.width = pct + "%";
+    document.getElementById("progressLabel").textContent = label;
+  } else { wrap.style.display = "none"; }
+}
+function showError(msg) {
+  document.getElementById("outputEmpty").style.display = "none";
+  document.getElementById("outputContent").style.display = "none";
+  document.getElementById("outputStreaming").style.display = "none";
+  resetPipelineStepOutputs();
+  const area = document.getElementById("outputArea");
+  area.querySelector(".error-msg")?.remove();
+  const error = document.createElement("div");
+  error.className = "error-msg";
+  error.textContent = msg;
+  area.prepend(error);
+}
+function updateProcessBtn() {
+  const hasContent = document.getElementById("unifiedInput").value.trim().length > 20;
+  document.getElementById("btnProcess").disabled = !isModelReady || !hasContent;
+}
+
+// ─── Audio Recording ──────────────────────────────────────────────────────
+async function setupAudioRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordingStream = stream;
+    // Pick the best codec the browser supports, falling back gracefully.
+    const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"]
+      .find(type => MediaRecorder.isTypeSupported(type)) ?? "";
+    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+    const blobType = mimeType || "audio/webm";
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(audioChunks, { type: blobType });
+      audioChunks = [];
+      await transcribeAudio(blob);
+    };
+  } catch (err) {
+    console.error("Microphone access denied:", err);
+    document.getElementById("micHint").textContent = "Microphone access denied. Please check permissions.";
+    document.getElementById("micBtn").disabled = true;
+  }
+}
+
+// ─── Audio helpers ────────────────────────────────────────────────────────
+
+/**
+ * Decode a Blob to a mono Float32Array at 16 kHz.
+ * Uses the browser's native decode rate first, then resamples via
+ * OfflineAudioContext if needed (avoids EncodingError on some Chrome builds).
+ */
+async function decodeAudioTo16k(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  let audioBuffer;
+  try {
+    audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+  } catch (decodeErr) {
+    console.error("Audio decode failed:", decodeErr);
+    throw new Error("Unable to decode audio. Try recording again or use the Text input tab.");
+  }
+
+  // Mix down to mono (take channel 0 — sufficient for speech)
+  let audioData = audioBuffer.getChannelData(0);
+
+  if (audioBuffer.sampleRate !== WHISPER_SAMPLE_RATE) {
+    const targetLength = Math.ceil(audioBuffer.duration * WHISPER_SAMPLE_RATE);
+    const offlineCtx = new OfflineAudioContext(1, targetLength, WHISPER_SAMPLE_RATE);
+    const source = offlineCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offlineCtx.destination);
+    source.start(0);
+    const resampled = await offlineCtx.startRendering();
+    audioData = resampled.getChannelData(0);
+  }
+
+  return audioData;
+}
+
+/**
+ * Slice a Float32Array into overlapping chunks of CHUNK_SAMPLES length.
+ * Each chunk (except the first) starts OVERLAP_SAMPLES before the previous
+ * chunk ended, so words at boundaries are captured in both chunks.
+ * Returns an array of { data: Float32Array, chunkIndex, totalChunks }.
+ */
+function sliceAudioIntoChunks(audioData) {
+  if (audioData.length <= CHUNK_SAMPLES) {
+    return [{ data: audioData, chunkIndex: 0, totalChunks: 1 }];
+  }
+
+  const chunks = [];
+  const step = CHUNK_SAMPLES - OVERLAP_SAMPLES;
+  let offset = 0;
+  while (offset < audioData.length) {
+    const end = Math.min(offset + CHUNK_SAMPLES, audioData.length);
+    chunks.push(audioData.slice(offset, end));
+    if (end === audioData.length) break;
+    offset += step;
+  }
+  return chunks.map((data, i) => ({ data, chunkIndex: i, totalChunks: chunks.length }));
+}
+
+/**
+ * Remove the overlapping prefix from chunkText that was already captured at
+ * the end of prevText. We compare word-by-word from the tail of prevText
+ * against the head of chunkText and strip any matching run.
+ *
+ * This is intentionally conservative: we only strip a prefix if we find a
+ * run of ≥3 consecutive matching words, to avoid false-positive deduplication.
+ */
+function deduplicateOverlap(prevText, chunkText) {
+  if (!prevText || !chunkText) return chunkText;
+
+  const prevWords  = prevText.trim().split(/\s+/);
+  const chunkWords = chunkText.trim().split(/\s+/);
+
+  const MIN_MATCH = 3;
+  // Try progressively shorter tails of prevText against the head of chunkText
+  for (let tailLen = Math.min(prevWords.length, 20); tailLen >= MIN_MATCH; tailLen--) {
+    const tail = prevWords.slice(-tailLen).join(" ").toLowerCase();
+    const head = chunkWords.slice(0, tailLen).join(" ").toLowerCase();
+    if (tail === head) {
+      return chunkWords.slice(tailLen).join(" ");
+    }
+  }
+  return chunkText;
+}
+
+async function transcribeAudio(blob) {
+  if (!transcriber) return;
+  const ta = document.getElementById("unifiedInput");
+
+  ta.readOnly = true; ta.classList.remove("is-editable");
+  document.getElementById("transcriptLabel").textContent = "Transcribing securely in browser\u2026";
+
+  try {
+    // 1. Decode the full recording to 16 kHz mono Float32
+    const audioData = await decodeAudioTo16k(blob);
+
+    // 2. Slice into overlapping chunks (no-op for recordings ≤27 s)
+    const chunks = sliceAudioIntoChunks(audioData);
+    const isMultiChunk = chunks.length > 1;
+
+    let sessionText = "";   // accumulated text for this recording session
+    let prevChunkText = ""; // last chunk's raw output, used for deduplication
+
+    for (const { data, chunkIndex, totalChunks } of chunks) {
+      if (isMultiChunk) {
+        document.getElementById("transcriptLabel").textContent =
+          `Transcribing chunk ${chunkIndex + 1} of ${totalChunks}\u2026`;
+      }
+
+      const result = await transcriber(data, {
+        return_timestamps: false,
+        repetition_penalty: 1.3,
+        no_repeat_ngram_size: 5
+      });
+
+      let chunkText = result.text.trim();
+      if (!chunkText) continue;
+
+      // Strip overlap with the previous chunk's output
+      if (chunkIndex > 0 && prevChunkText) {
+        chunkText = deduplicateOverlap(prevChunkText, chunkText);
+      }
+      prevChunkText = result.text.trim(); // keep raw for next dedup pass
+
+      if (chunkText) {
+        sessionText = sessionText ? (sessionText + " " + chunkText) : chunkText;
+      }
+
+      // Show partial progress in the textarea while still processing
+      if (isMultiChunk) {
+        const existing = ta.dataset.preRecordValue || "";
+        const displayText = existing ? (existing + "\n\n" + sessionText) : sessionText;
+        ta.value = displayText;
+        ta.scrollTop = ta.scrollHeight;
+        ta.dispatchEvent(new Event("input"));
+      }
+    }
+
+    if (sessionText) {
+      const existing = ta.dataset.preRecordValue || "";
+      transcript = sessionText;
+      ta.value = existing ? (existing + "\n\n" + sessionText) : sessionText;
+      ta.value = expandMacros(ta.value);
+      ta.readOnly = false; ta.classList.add("is-editable");
+      document.getElementById("transcriptLabel").textContent = "Unified input \u2014 editable";
+      ta.dispatchEvent(new Event("input"));
+    } else {
+      // Nothing detected — restore editable state without changing transcript
+      ta.readOnly = false; ta.classList.add("is-editable");
+      document.getElementById("transcriptLabel").textContent = "Unified input \u2014 editable";
+    }
+    delete ta.dataset.preRecordValue;
+
+    document.getElementById("micHint").textContent = "Click to begin recording";
+    updateProcessBtn();
+  } catch (err) {
+    console.error("Transcription error:", err);
+    ta.readOnly = false; ta.classList.add("is-editable");
+    document.getElementById("transcriptLabel").textContent = "Transcription failed.";
+    document.getElementById("micHint").textContent = "Click to begin recording";
+    delete ta.dataset.preRecordValue;
+  }
+}
+
+// ─── Circular Audio Waveform Visualizer ──────────────────────────────────────
+function startVisualizer() {
+  const stream = recordingStream || (mediaRecorder && mediaRecorder.stream);
+  if (!stream) return;
+  try {
+    if (!visualizerAudioCtx) {
+      visualizerAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } else if (visualizerAudioCtx.state === "suspended") {
+      visualizerAudioCtx.resume();
+    }
+    visualizerAnalyser = visualizerAudioCtx.createAnalyser();
+    visualizerAnalyser.fftSize = 256;
+    visualizerSource = visualizerAudioCtx.createMediaStreamSource(stream);
+    visualizerSource.connect(visualizerAnalyser);
+    drawWaveform();
+  } catch (err) {
+    console.error("Failed to start waveform visualizer:", err);
+  }
+}
+
+function drawWaveform() {
+  const canvas = document.getElementById("micWaveform");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const baseRadius = 38; // Radius just outside the 56px button (which has 28px radius)
+  const maxOffset = 25;  // Max outward animation amplitude
+
+  const bufferLength = visualizerAnalyser.frequencyBinCount;
+  const dataArray = new Uint8Array(bufferLength);
+  const smoothData = new Float32Array(bufferLength);
+
+  function draw() {
+    if (!isRecording) {
+      ctx.clearRect(0, 0, width, height);
+      return;
+    }
+    visualizerAnimationId = requestAnimationFrame(draw);
+    visualizerAnalyser.getByteFrequencyData(dataArray);
+
+    ctx.clearRect(0, 0, width, height);
+
+    // Background ambient ring
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, baseRadius, 0, 2 * Math.PI);
+    ctx.strokeStyle = "rgba(0, 229, 160, 0.08)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Draw glowing circular waveform
+    ctx.beginPath();
+    const numPoints = 64; // Balance resolution and rendering performance
+    for (let i = 0; i < numPoints; i++) {
+      const angle = (i / numPoints) * 2 * Math.PI;
+      // Symmetric styling: map left/right to keep circle visually balanced
+      const dataIdx = i < numPoints / 2 ? i : numPoints - i;
+      const rawValue = dataArray[dataIdx] || 0;
+
+      // Smooth transitions
+      smoothData[i] = smoothData[i] * 0.75 + rawValue * 0.25;
+      const offset = (smoothData[i] / 255.0) * maxOffset;
+      const r = baseRadius + offset;
+
+      const x = centerX + Math.cos(angle) * r;
+      const y = centerY + Math.sin(angle) * r;
+
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.closePath();
+
+    ctx.strokeStyle = "#00e5a0";
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = "#00e5a0";
+    ctx.shadowBlur = 10;
+    ctx.stroke();
+    ctx.shadowBlur = 0; // Reset shadow for other drawings
+  }
+  draw();
+}
+
+function stopVisualizer() {
+  if (visualizerAnimationId) {
+    cancelAnimationFrame(visualizerAnimationId);
+    visualizerAnimationId = null;
+  }
+  if (visualizerSource) {
+    visualizerSource.disconnect();
+    visualizerSource = null;
+  }
+  if (visualizerAnalyser) {
+    visualizerAnalyser = null;
+  }
+  if (visualizerAudioCtx && visualizerAudioCtx.state !== "closed") {
+    visualizerAudioCtx.suspend();
+  }
+  const canvas = document.getElementById("micWaveform");
+  if (canvas) {
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+}
+
+window.toggleRecording = async function() { if (isRecording) stopRecording(); else await startRecording(); };
+
+async function startRecording() {
+  if (!mediaRecorder) { await setupAudioRecording(); if (!mediaRecorder) return; }
+  audioChunks = []; mediaRecorder.start(); isRecording = true;
+  startVisualizer();
+  document.getElementById("micVisualizer").classList.add("recording");
+  document.getElementById("micBtn").style.cssText = "";
+  document.getElementById("micHint").textContent = "Listening\u2026 speak your assessment and plan";
+  document.getElementById("recordingTimer").style.display = "flex";
+  
+  const ta = document.getElementById("unifiedInput");
+  // Lock the textarea and update the label, but leave the text intact
+  ta.dataset.preRecordValue = ta.value.trim();
+  ta.readOnly = true; ta.classList.remove("is-editable");
+  document.getElementById("transcriptLabel").textContent = "Recording in progress\u2026";
+  
+  timerSeconds = 0; updateTimer();
+  timerInterval = setInterval(updateTimer, 1000);
+}
+
+function stopRecording() {
+  isRecording = false; mediaRecorder.stop();
+  stopVisualizer();
+  document.getElementById("micVisualizer").classList.remove("recording");
+  document.getElementById("micHint").textContent = "Transcribing audio locally\u2026";
+  document.getElementById("recordingTimer").style.display = "none";
+  clearInterval(timerInterval);
+}
+function updateTimer() {
+  timerSeconds++;
+  document.getElementById("timerDisplay").textContent =
+    `${String(Math.floor(timerSeconds/60)).padStart(2,"0")}:${String(timerSeconds%60).padStart(2,"0")}`;
+}
+
+// ─── Post-processing ──────────────────────────────────────────────────────
+function stripThinkTags(raw) {
+  return raw.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/<think>[\s\S]*/gi, "").trim();
+}
+function splitKeywords(value) {
+  return String(value || "").split(",").map(s => s.trim()).filter(Boolean);
+}
+function entryAllowsLlm(entry) {
+  return entry.detectionMode === "llm" || entry.detectionMode === "both";
+}
+function entryAllowsRegex(entry) {
+  return entry.detectionMode === "regex" || entry.detectionMode === "both";
+}
+function transcriptMatchesKeywords(entry, text) {
+  const lower = String(text || "").toLowerCase();
+  return splitKeywords(entry.keywords).some(keyword => lower.includes(keyword.toLowerCase()));
+}
+function getBothModeKeywordMatches(cleanedTranscript) {
+  return (settings.boilerplate || []).filter(entry =>
+    entry.detectionMode === "both" &&
+    entry.key &&
+    entry.trigger &&
+    transcriptMatchesKeywords(entry, cleanedTranscript)
+  );
+}
+function buildBoilerplateHint(cleanedTranscript) {
+  const matches = getBothModeKeywordMatches(cleanedTranscript);
+  if (matches.length === 0) return "";
+  return "Pre-detected conditions — confirm and emit boilerplate tags if clinically present:\n" +
+    matches.map(entry => `- ${entry.trigger.trim()} \u2192 [BOILERPLATE:${entry.key.trim().toUpperCase()}]`).join("\n") +
+    "\n\n";
+}
+function resolveBoilerplateTags(rawLLMOutput, cleanedTranscript) {
+  const raw = stripThinkTags(rawLLMOutput);
+  const resolvedKeys = new Set();
+  const byKey = new Map((settings.boilerplate || []).map(entry => [String(entry.key || "").trim().toUpperCase(), entry]));
+
+  raw.replace(/\[BOILERPLATE:([A-Z0-9_]+)\]/g, (_, key) => {
+    const normalized = key.trim().toUpperCase();
+    const entry = byKey.get(normalized);
+    if (entry && entryAllowsLlm(entry)) resolvedKeys.add(normalized);
+    return "";
+  });
+
+  for (const entry of settings.boilerplate || []) {
+    const key = String(entry.key || "").trim().toUpperCase();
+    if (!key || resolvedKeys.has(key) || !entryAllowsRegex(entry)) continue;
+    if (transcriptMatchesKeywords(entry, cleanedTranscript)) resolvedKeys.add(key);
+  }
+
+  const cleanNote = raw.replace(/\[BOILERPLATE:[A-Z0-9_]+\]/g, "").replace(/\n{3,}/g, "\n\n").trim();
+  const additions = (settings.boilerplate || [])
+    .filter(entry => resolvedKeys.has(String(entry.key || "").trim().toUpperCase()))
+    .map(entry => String(entry.text || "").trim())
+    .filter(Boolean);
+  return [cleanNote, ...additions].filter(Boolean).join("\n\n");
+}
+function postProcess(raw, cleanedTranscript = "") { return resolveBoilerplateTags(raw, cleanedTranscript); }
+
+// ─── Toast / Clipboard ────────────────────────────────────────────────────
+function copyToClipboardRich(plainText, htmlText) {
+  if (typeof ClipboardItem === "undefined") {
+    return navigator.clipboard.writeText(plainText);
+  }
+  const plainTextBlob = new Blob([plainText], { type: "text/plain" });
+  const htmlTextBlob = new Blob([htmlText], { type: "text/html" });
+  const item = new ClipboardItem({
+    "text/plain": plainTextBlob,
+    "text/html": htmlTextBlob
+  });
+  return navigator.clipboard.write([item]);
+}
+function autoCopyToClipboard(plainText, htmlText) {
+  copyToClipboardRich(plainText, htmlText || plainText)
+    .then(() => showAutocopyToast("\u2713 Auto-copied to clipboard"))
+    .catch(() => {});
+}
+function showAutocopyToast(msg) {
+  const toast = document.getElementById("autocopyToast");
+  toast.textContent = msg; toast.classList.add("visible");
+  setTimeout(() => toast.classList.remove("visible"), 2500);
+}
+function sanitizeSmartChartHtml(html) {
+  const template = document.createElement("template");
+  template.innerHTML = String(html || "");
+  template.content.querySelectorAll("script,iframe,object,embed,link,style").forEach(el => el.remove());
+  template.content.querySelectorAll("*").forEach(el => {
+    [...el.attributes].forEach(attr => {
+      if (/^on/i.test(attr.name) || /javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
+    });
+  });
+  return template.innerHTML;
+}
+function getSmartChartDelays() {
+  const behavior = settings.behavior || {};
+  return {
+    copyMs: Math.max(500, Math.min(10000, Number(behavior.smartChartAutoCopyDelay ?? 1.5) * 1000)),
+    clearMs: Math.max(10000, Math.min(300000, Number(behavior.smartChartAutoClearDelay ?? 30) * 1000))
+  };
+}
+function matchSmartChartTemplates(input) {
+  const lower = String(input || "").toLowerCase();
+  if (!lower.trim()) return [];
+  return (settings.templates || [])
+    .filter(template => splitKeywords(template.triggers).some(trigger => lower.includes(trigger.toLowerCase())))
+    .sort((a, b) => Number(a.priority ?? 99) - Number(b.priority ?? 99));
+}
+function assembleSmartChartNote(input, matches) {
+  const templateText = matches.map(t => String(t.content || "").trim()).filter(Boolean).join("\n\n");
+  return String(settings.noteTemplate || SMARTCHART_DEFAULT_NOTE_TEMPLATE)
+    .replace(/\{input\}/g, input)
+    .replace(/\{templates\}/g, templateText)
+    .replace(/\{static:([^}]*)\}/g, (_, text) => String(text || "").replace(/<br\s*\/?>/gi, "\n"));
+}
+function smartChartMarkdownToHtml(markdownText) {
+  return sanitizeSmartChartHtml(marked.parse(String(markdownText || ""), { breaks: true }));
+}
+function smartChartPlainText(markdownText) {
+  const div = document.createElement("div");
+  div.innerHTML = smartChartMarkdownToHtml(markdownText);
+  div.querySelectorAll("br").forEach(el => el.replaceWith("\n"));
+  div.querySelectorAll("p, div, li, h1, h2, h3").forEach(el => el.insertAdjacentText("afterend", "\n"));
+  return (div.innerText || div.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+}
+function clearSmartChartOutput() {
+  currentSmartChartNote = "";
+  clearTimeout(smartChartCopyTimer);
+  clearTimeout(smartChartClearTimer);
+  document.getElementById("smartChartCopyIndicator")?.classList.remove("visible");
+  const empty = document.getElementById("smartChartEmpty");
+  const content = document.getElementById("smartChartContent");
+  const matchInfo = document.getElementById("smartChartMatchInfo");
+  if (empty) empty.style.display = "flex";
+  if (content) { content.style.display = "none"; content.innerHTML = ""; }
+  if (matchInfo) matchInfo.textContent = "Live";
+}
+function scheduleSmartChartCopy() {
+  clearTimeout(smartChartCopyTimer);
+  const indicator = document.getElementById("smartChartCopyIndicator");
+  if (!currentSmartChartNote.trim()) {
+    indicator?.classList.remove("visible");
+    return;
+  }
+  indicator?.classList.add("visible");
+  smartChartCopyTimer = setTimeout(async () => {
+    indicator?.classList.remove("visible");
+    try {
+      await copyToClipboardRich(smartChartPlainText(currentSmartChartNote), smartChartMarkdownToHtml(currentSmartChartNote));
+      showAutocopyToast("\u2713 SmartChart copied");
+    } catch {}
+  }, getSmartChartDelays().copyMs);
+}
+function scheduleSmartChartClear() {
+  clearTimeout(smartChartClearTimer);
+  smartChartClearTimer = setTimeout(() => {
+    const input = document.getElementById("unifiedInput");
+    if (input) input.value = "";
+    clearSmartChartOutput();
+    updateProcessBtn();
+  }, getSmartChartDelays().clearMs);
+}
+function updateSmartChartPreview() {
+  const input = document.getElementById("unifiedInput")?.value || "";
+  const matches = matchSmartChartTemplates(input);
+  const matchInfo = document.getElementById("smartChartMatchInfo");
+  if (!input.trim() || matches.length === 0) {
+    clearSmartChartOutput();
+    return;
+  }
+  currentSmartChartNote = assembleSmartChartNote(input.trim(), matches);
+  document.getElementById("smartChartEmpty").style.display = "none";
+  const content = document.getElementById("smartChartContent");
+  content.style.display = "block";
+  content.innerHTML = smartChartMarkdownToHtml(currentSmartChartNote);
+  if (matchInfo) matchInfo.textContent = `${matches.length} matched`;
+  scheduleSmartChartCopy();
+}
+function handleUnifiedInput() {
+  updateProcessBtn();
+  clearTimeout(smartChartDebounceTimer);
+  clearTimeout(smartChartClearTimer);
+  document.getElementById("smartChartCopyIndicator")?.classList.remove("visible");
+  smartChartDebounceTimer = setTimeout(() => {
+    updateSmartChartPreview();
+    if (currentSmartChartNote.trim()) scheduleSmartChartClear();
+  }, 300);
+}
+window.copySmartChartOutput = async function() {
+  if (!currentSmartChartNote.trim()) return;
+  await copyToClipboardRich(smartChartPlainText(currentSmartChartNote), smartChartMarkdownToHtml(currentSmartChartNote));
+  showAutocopyToast("\u2713 SmartChart copied");
+};
+function getCurrentOutputText() {
+  const lines = [];
+  for (const node of document.getElementById("outputContent").children) {
+    if (node.classList.contains("problem-block")) {
+      const t = node.querySelector(".problem-title"); if (t) lines.push(t.textContent.trim());
+      node.querySelectorAll(".problem-items li").forEach(li => lines.push("- " + li.textContent.trim()));
+      lines.push("");
+    } else if (node.classList.contains("boilerplate-block")) {
+      lines.push(node.textContent.trim()); lines.push("");
+    } else { const t = node.textContent.trim(); if (t) lines.push(t); }
+  }
+  return lines.join("\n").trim();
+}
+function getCurrentOutputHtml() {
+  const htmlParts = [];
+  for (const node of document.getElementById("outputContent").children) {
+    if (node.classList.contains("problem-block")) {
+      const t = node.querySelector(".problem-title");
+      if (t) {
+        htmlParts.push(`<h3><strong>${escHtml(t.textContent.trim())}</strong></h3>`);
+      }
+      const lis = [];
+      node.querySelectorAll(".problem-items li").forEach(li => {
+        lis.push(`  <li>${escHtml(li.textContent.trim())}</li>`);
+      });
+      if (lis.length > 0) {
+        htmlParts.push(`<ul>\n${lis.join("\n")}\n</ul>`);
+      }
+      htmlParts.push("<br/>");
+    } else if (node.classList.contains("boilerplate-block")) {
+      htmlParts.push(`<p><em>${escHtml(node.textContent.trim())}</em></p>`);
+      htmlParts.push("<br/>");
+    } else {
+      const t = node.textContent.trim();
+      if (t) {
+        htmlParts.push(`<p>${escHtml(t)}</p>`);
+      }
+    }
+  }
+  return htmlParts.join("\n").trim();
+}
+function getProblemBlockHtml(block) {
+  const htmlParts = [];
+  const title = block.querySelector(".problem-title");
+  if (title) {
+    htmlParts.push(`<h3><strong>${escHtml(title.textContent.trim())}</strong></h3>`);
+  }
+  const lis = [];
+  block.querySelectorAll(".problem-items li").forEach(li => {
+    lis.push(`  <li>${escHtml(li.textContent.trim())}</li>`);
+  });
+  if (lis.length > 0) {
+    htmlParts.push(`<ul>\n${lis.join("\n")}\n</ul>`);
+  }
+  return htmlParts.join("\n");
+}
+function getPipelineStepsContainer() {
+  return document.getElementById("pipelineStepsOutput");
+}
+function resetPipelineStepOutputs() {
+  const container = getPipelineStepsContainer();
+  if (!container) return;
+  container.innerHTML = "";
+  container.style.display = "none";
+}
+function renderPipelineRichText(raw) {
+  function inlineMarkdown(text) {
+    return escHtml(text)
+      .replace(/\*\*([^\*\n][\s\S]*?[^\*\n])\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^\*])\*([^\*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+      .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>");
+  }
+
+  const html = [];
+  let listType = null;
+  const closeList = () => {
+    if (listType) html.push(`</${listType}>`);
+    listType = null;
+  };
+
+  for (const line of raw.split("\n")) {
+    const bullet = line.match(/^\s*[-*•]\s+(.+)$/);
+    const numbered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (!line.trim()) {
+      closeList();
+      html.push("<div><br></div>");
+    } else if (bullet) {
+      if (listType !== "ul") {
+        closeList();
+        html.push("<ul>");
+        listType = "ul";
+      }
+      html.push(`<li>${inlineMarkdown(bullet[1])}</li>`);
+    } else if (numbered) {
+      if (listType !== "ol") {
+        closeList();
+        html.push("<ol>");
+        listType = "ol";
+      }
+      html.push(`<li>${inlineMarkdown(numbered[1])}</li>`);
+    } else {
+      closeList();
+      html.push(`<div>${inlineMarkdown(line)}</div>`);
+    }
+  }
+  closeList();
+  return html.join("");
+}
+function renderPipelineStepOutput(step, text = "", state = "streaming") {
+  const container = getPipelineStepsContainer();
+  if (!container) return null;
+  container.style.display = "flex";
+  let box = container.querySelector(`[data-step-id="${CSS.escape(step.id)}"]`);
+  if (!box) {
+    box = document.createElement("section");
+    box.className = "pipeline-step-output";
+    box.dataset.stepId = step.id;
+    box.innerHTML = `
+      <div class="pipeline-step-header">
+        <div class="pipeline-step-title-wrap">
+          <span class="pipeline-step-kicker">EXTRA</span>
+          <h3 class="pipeline-step-title"></h3>
+        </div>
+        <div class="pipeline-step-status"><span class="think-dot"></span>Generating...</div>
+        <button class="btn-copy pipeline-step-copy" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copy
+        </button>
+      </div>
+      <div class="pipeline-step-text" contenteditable="false" spellcheck="true"></div>
+    `;
+    container.appendChild(box);
+  }
+  box.querySelector(".pipeline-step-title").textContent = step.label || "Pipeline Step";
+  const textEl = box.querySelector(".pipeline-step-text");
+  textEl.innerHTML = renderPipelineRichText(text);
+  textEl.contentEditable = state === "done" ? "true" : "false";
+  box.classList.toggle("is-streaming", state === "streaming");
+  box.classList.toggle("is-error", state === "error");
+  const status = box.querySelector(".pipeline-step-status");
+  status.innerHTML = state === "streaming"
+    ? '<span class="think-dot"></span>Generating...'
+    : state === "error"
+      ? "Could not generate"
+      : "Ready";
+  const copyBtn = box.querySelector(".pipeline-step-copy");
+  copyBtn.disabled = !text.trim() || state === "streaming";
+  copyBtn.onclick = () => copyPipelineStepOutput(step.id, copyBtn);
+  return box;
+}
+async function copyPipelineStepOutput(stepId, btn) {
+  const box = document.querySelector(`[data-step-id="${CSS.escape(stepId)}"]`);
+  const textEl = box?.querySelector(".pipeline-step-text");
+  const text = textEl?.innerText || textEl?.textContent || "";
+  if (!text.trim()) return;
+  const html = textEl?.innerHTML || escHtml(text);
+  const resetHTML = btn.innerHTML;
+  try {
+    await copyToClipboardRich(text, `<div>${html}</div>`);
+    flashCopied(btn, resetHTML);
+    showAutocopyToast("\u2713 Step copied");
+  } catch {}
+}
+async function runPipelineStep(step, userContent) {
+  let rawText = "";
+  renderPipelineStepOutput(step, "", "streaming");
+  const stream = await engine.chat.completions.create({
+    messages: [
+      { role: "system", content: step.prompt },
+      { role: "user", content: `${userContent}\n\n/no_think` }
+    ],
+    stream: true, temperature: 0.1, max_tokens: 1024, extra_body: { enable_thinking: false }
+  });
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content || "";
+    rawText += delta;
+    renderPipelineStepOutput(step, stripThinkTags(rawText), "streaming");
+  }
+  const finalText = stripThinkTags(rawText);
+  renderPipelineStepOutput(step, finalText, "done");
+  return finalText;
+}
+
+// ─── Process Note ─────────────────────────────────────────────────────────
+window.processNote = async function() {
+  if (!isModelReady || !engine) return;
+  const inputEl = document.getElementById("unifiedInput");
+  const rawInput = inputEl.value.trim();
+  if (!rawInput) return;
+  const input = expandMacros(rawInput);
+  const empty = document.getElementById("outputEmpty");
+  const content = document.getElementById("outputContent");
+  const streaming = document.getElementById("outputStreaming");
+  const streamText = document.getElementById("streamText");
+  const btnCopy = document.getElementById("btnCopy");
+  const btnCopyGroup = document.getElementById("btnCopyGroup");
+  const editHint = document.getElementById("editHint");
+  const thinkLabel = document.querySelector(".thinking-label");
+  empty.style.display = "none"; content.style.display = "none"; content.contentEditable = "false";
+  streaming.style.display = "block"; btnCopy.style.display = "none";
+  resetPipelineStepOutputs();
+  if (btnCopyGroup) btnCopyGroup.style.display = "none";
+  editHint.style.display = "none"; streamText.textContent = "";
+  document.getElementById("btnProcess").disabled = true;
+  try {
+    thinkLabel.innerHTML = '<span class="think-dot"></span>Cleaning transcript\u2026';
+    const cleanupResponse = await engine.chat.completions.create({
+      messages: [
+        { role: "system", content: getCleanupSystemPrompt() },
+        { role: "user", content: input + "\n\n/no_think" }
+      ],
+      stream: false, temperature: 0.1, max_tokens: 512, extra_body: { enable_thinking: false }
+    });
+    let cleanedInput = stripThinkTags(cleanupResponse.choices[0]?.message?.content || input);
+    if (!cleanedInput.trim()) cleanedInput = input;
+    transcript = cleanedInput;
+    inputEl.value = cleanedInput;
+    inputEl.readOnly = false; inputEl.classList.add("is-editable");
+    document.getElementById("transcriptLabel").textContent = "Unified input \u2014 editable";
+    inputEl.dispatchEvent(new Event("input"));
+    thinkLabel.innerHTML = '<span class="think-dot"></span>Generating notes\u2026';
+    streamText.textContent = "";
+    let rawText = "";
+    const boilerplateHint = buildBoilerplateHint(cleanedInput);
+    const stream = await engine.chat.completions.create({
+      messages: [
+        { role: "system", content: getNoteSystemPrompt() },
+        { role: "user", content: `${boilerplateHint}Convert this clinical dictation into structured assessment and plan notes:\n\nDictation: ${cleanedInput}\n\n/no_think` }
+      ],
+      stream: true, temperature: 0.1, max_tokens: 1024, extra_body: { enable_thinking: false }
+    });
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content || "";
+      rawText += delta; streamText.textContent = rawText;
+    }
+    const processedText = postProcess(rawText, cleanedInput);
+    streaming.style.display = "none"; renderOutput(processedText);
+    if (btnCopyGroup) btnCopyGroup.style.display = "flex";
+    btnCopy.style.display = "flex"; editHint.style.display = "flex";
+    window._rawOutput = processedText;
+    setTimeout(() => { content.contentEditable = "true"; }, 200);
+    setTimeout(() => {
+      const plainText = getCurrentOutputText() || processedText;
+      const htmlText = getCurrentOutputHtml() || processedText;
+      autoCopyToClipboard(plainText, htmlText);
+    }, 400);
+    const enabledSteps = (settings.pipelineSteps || []).filter(s => s.enabled && s.prompt.trim());
+    for (const step of enabledSteps) {
+      const userContent = step.inputSource === "cleanedTranscript" ? cleanedInput : processedText;
+      try {
+        await runPipelineStep(step, userContent);
+      } catch (stepErr) {
+        console.error("Pipeline step failed:", stepErr);
+        renderPipelineStepOutput(step, "Error generating this pipeline step: " + stepErr.message, "error");
+      }
+    }
+  } catch (err) {
+    console.error("Generation error:", err);
+    streaming.style.display = "none";
+    showError("Error generating notes: " + err.message);
+  }
+  updateProcessBtn();
+};
+
+// ─── Render Output ────────────────────────────────────────────────────────
+function isBoilerplateParagraph(text) { return text.length > 60 && !text.startsWith("-") && !text.startsWith("\u2022"); }
+function renderOutput(raw) {
+  const content = document.getElementById("outputContent");
+  content.style.display = "block"; content.innerHTML = "";
+  let currentItems = null, blockCount = 0, problemCount = 0;
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim(); if (!trimmed) continue;
+    const isBullet = trimmed.startsWith("-") || trimmed.startsWith("\u2022");
+    if (isBoilerplateParagraph(trimmed)) {
+      const bp = document.createElement("div");
+      bp.className = "boilerplate-block"; bp.style.opacity = "0"; bp.textContent = trimmed;
+      content.appendChild(bp); currentItems = null; blockCount++;
+      requestAnimationFrame(() => { bp.style.opacity = "1"; });
+    } else if (!isBullet) {
+      problemCount++;
+      const block = document.createElement("div");
+      block.className = "problem-block"; block.dataset.problemIndex = problemCount;
+      block.style.animationDelay = `${blockCount * 0.08}s`; block.style.opacity = "0";
+      const titleRow = document.createElement("div"); titleRow.className = "problem-title-row";
+      const title = document.createElement("div"); title.className = "problem-title"; title.textContent = trimmed;
+      titleRow.appendChild(title);
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "btn-copy-problem"; copyBtn.setAttribute("aria-label","Copy this problem block");
+      copyBtn.title = "Copy this problem"; copyBtn.dataset.problemIndex = problemCount;
+      copyBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+      copyBtn.addEventListener("click", (e) => { e.stopPropagation(); copyProblemBlock(block, copyBtn); });
+      titleRow.appendChild(copyBtn); block.appendChild(titleRow);
+      const ul = document.createElement("ul"); ul.className = "problem-items";
+      block.appendChild(ul); content.appendChild(block); currentItems = ul; blockCount++;
+      requestAnimationFrame(() => { block.style.opacity = ""; });
+    } else if (isBullet && currentItems) {
+      const li = document.createElement("li"); li.textContent = trimmed.replace(/^[-\u2022]\s*/, "");
+      currentItems.appendChild(li);
+    }
+  }
+  if (blockCount === 0) {
+    content.innerHTML = `<pre style="font-family:var(--font-mono);font-size:0.8rem;line-height:1.8;color:var(--text);padding:1rem;white-space:pre-wrap">${raw}</pre>`;
+  }
+  updateCopyDropdown();
+}
+
+// ─── Copy ─────────────────────────────────────────────────────────────────
+function flashCopied(btn, resetHTML) {
+  btn.classList.add("copied");
+  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polyline points="20 6 9 17 4 12"/></svg>`;
+  setTimeout(() => { btn.classList.remove("copied"); btn.innerHTML = resetHTML; }, 1800);
+}
+window.copyOutput = function() {
+  const plainText = getCurrentOutputText() || window._rawOutput || "";
+  const htmlText = getCurrentOutputHtml() || window._rawOutput || "";
+  copyToClipboardRich(plainText, htmlText).then(() => {
+    const btn = document.getElementById("btnCopy");
+    btn.classList.add("copied");
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copied!`;
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy All`;
+    }, 2000);
+  });
+};
+function getProblemBlockText(block) {
+  const lines = [];
+  const title = block.querySelector(".problem-title"); if (title) lines.push(title.textContent.trim());
+  block.querySelectorAll(".problem-items li").forEach(li => lines.push("- " + li.textContent.trim()));
+  return lines.join("\n");
+}
+function copyProblemBlock(block, btn) {
+  const resetHTML = btn.innerHTML;
+  const plainText = getProblemBlockText(block);
+  const htmlText = getProblemBlockHtml(block);
+  copyToClipboardRich(plainText, htmlText)
+    .then(() => { flashCopied(btn, resetHTML); showAutocopyToast("\u2713 Problem copied"); })
+    .catch(() => {});
+}
+window.copyProblemByIndex = function(idx) {
+  const block = document.querySelector(`.problem-block[data-problem-index="${idx}"]`);
+  if (!block) return;
+  const plainText = getProblemBlockText(block);
+  const htmlText = getProblemBlockHtml(block);
+  copyToClipboardRich(plainText, htmlText)
+    .then(() => { showAutocopyToast("\u2713 Problem " + idx + " copied"); closeCopyDropdown(); })
+    .catch(() => {});
+};
+function updateCopyDropdown() {
+  const dropdown = document.getElementById("copyDropdown"); if (!dropdown) return;
+  dropdown.innerHTML = "";
+  const allOpt = document.createElement("button");
+  allOpt.className = "copy-dropdown-item copy-dropdown-all"; allOpt.setAttribute("role","option");
+  allOpt.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy All`;
+  allOpt.addEventListener("click", () => { copyOutput(); closeCopyDropdown(); });
+  dropdown.appendChild(allOpt);
+  const blocks = document.querySelectorAll(".problem-block");
+  if (blocks.length > 1) {
+    const divider = document.createElement("div"); divider.className = "copy-dropdown-divider";
+    dropdown.appendChild(divider);
+    blocks.forEach((block, i) => {
+      const titleEl = block.querySelector(".problem-title");
+      const label = titleEl ? titleEl.textContent.trim() : `Problem ${i+1}`;
+      const opt = document.createElement("button");
+      opt.className = "copy-dropdown-item"; opt.setAttribute("role","option"); opt.dataset.problemIndex = i+1;
+      opt.innerHTML = `<span class="copy-dropdown-num">${i+1}</span>${label.length>34?label.slice(0,32)+"\u2026":label}`;
+      opt.addEventListener("click", () => window.copyProblemByIndex(i+1));
+      dropdown.appendChild(opt);
+    });
+  }
+}
+window.toggleCopyDropdown = function(e) {
+  e.stopPropagation();
+  const dropdown = document.getElementById("copyDropdown");
+  const chevron = document.getElementById("btnCopyChevron");
+  if (dropdown.classList.contains("open")) closeCopyDropdown();
+  else { dropdown.classList.add("open"); chevron.setAttribute("aria-expanded","true"); }
+};
+function closeCopyDropdown() {
+  const d = document.getElementById("copyDropdown"), c = document.getElementById("btnCopyChevron");
+  if (d) d.classList.remove("open"); if (c) c.setAttribute("aria-expanded","false");
+}
+document.addEventListener("click", () => closeCopyDropdown());
+
+// ─── Clear ────────────────────────────────────────────────────────────────
+window.clearAll = function() {
+  transcript = "";
+  const ta = document.getElementById("unifiedInput");
+  ta.value = ""; ta.placeholder = "Type a one-liner or full dictation...";
+  ta.readOnly = false; ta.classList.add("is-editable");
+  document.getElementById("transcriptLabel").textContent = "Unified input";
+  clearSmartChartOutput();
+  document.getElementById("outputEmpty").style.display = "flex";
+  const content = document.getElementById("outputContent");
+  content.style.display = "none"; content.contentEditable = "false"; content.innerHTML = "";
+  document.getElementById("outputStreaming").style.display = "none";
+  resetPipelineStepOutputs();
+  document.getElementById("btnCopy").style.display = "none";
+  const cg = document.getElementById("btnCopyGroup"); if (cg) cg.style.display = "none";
+  document.getElementById("editHint").style.display = "none";
+  const area = document.getElementById("outputArea");
+  const err = area.querySelector(".error-msg"); if (err) err.remove();
+  area.appendChild(document.getElementById("outputEmpty"));
+  area.appendChild(content);
+  area.appendChild(getPipelineStepsContainer());
+  area.appendChild(document.getElementById("outputStreaming"));
+  window._rawOutput = "";
+  if (isRecording) {
+    const prev = mediaRecorder.onstop; mediaRecorder.onstop = null;
+    stopRecording(); mediaRecorder.onstop = prev;
+  }
+  updateProcessBtn();
+};
+document.getElementById("unifiedInput").addEventListener("input", handleUnifiedInput);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SETTINGS DRAWER
+// ═══════════════════════════════════════════════════════════════════════════
+window.openSettings = function() {
+  populateSettingsUI();
+  document.getElementById("settingsDrawer").classList.add("open");
+  document.getElementById("settingsOverlay").classList.add("open");
+  document.body.style.overflow = "hidden";
+};
+window.closeSettings = function() {
+  document.getElementById("settingsDrawer").classList.remove("open");
+  document.getElementById("settingsOverlay").classList.remove("open");
+  document.body.style.overflow = "";
+};
+function populateSettingsUI() {
+  document.getElementById("settingLLMModel").value = settings.llmModel;
+  document.getElementById("settingWhisperModel").value = settings.whisperModel;
+  document.getElementById("settingTermVocabulary").value = (settings.termVocabulary || []).join("\n");
+  document.getElementById("settingMacros").value = (settings.macros || []).map(m => `${m.key}: ${m.value}`).join("\n");
+  document.getElementById("settingCleanupPrompt").value = settings.cleanupPrompt;
+  document.getElementById("settingMainPrompt").value = settings.mainPrompt;
+  document.getElementById("settingNoteTemplate").value = settings.noteTemplate;
+  document.getElementById("settingSmartCopyDelay").value = settings.behavior?.smartChartAutoCopyDelay ?? 1.5;
+  document.getElementById("settingSmartClearDelay").value = settings.behavior?.smartChartAutoClearDelay ?? 30;
+  renderPipelineStepsList();
+  renderPipelineLibrary();
+  renderBoilerplateList();
+  renderTemplateList();
+}
+
+// ─── Reload Models ────────────────────────────────────────────────────────
+window.reloadModels = function() {
+  settings.llmModel     = document.getElementById("settingLLMModel").value;
+  settings.whisperModel = document.getElementById("settingWhisperModel").value;
+  saveSettingsToStorage(settings);
+  const note = document.getElementById("settingsModelNote");
+  if (note) note.textContent = "Reloading models\u2026";
+  closeSettings();
+  clearAll();
+  initModel().finally(() => { if (note) note.textContent = ""; });
+};
+
+// ─── Boilerplate UI ───────────────────────────────────────────────────────
+function renderBoilerplateList() {
+  const container = document.getElementById("boilerplateList");
+  container.innerHTML = "";
+  settings.boilerplate.forEach((entry, idx) => container.appendChild(createBoilerplateEntryEl(entry, idx)));
+}
+function escHtml(str) {
+  return String(str||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function createBoilerplateEntryEl(entry, idx) {
+  const div = document.createElement("div"); div.className = "bp-entry"; div.dataset.idx = idx;
+  const mode = entry.detectionMode || "llm";
+  div.innerHTML = `
+    <div class="bp-entry-header" onclick="toggleBpEntry(this)">
+      <span class="bp-entry-key-badge">[BOILERPLATE:<input class="bp-entry-key-input" type="text" value="${escHtml(entry.key)}" placeholder="KEY" maxlength="30" spellcheck="false" onclick="event.stopPropagation()" oninput="updateBpKey(${idx},this.value)"/>]</span>
+      <span class="bp-entry-toggle"><svg class="bp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
+    </div>
+    <div class="bp-entry-body">
+      <div><div class="bp-field-label">Trigger phrase(s)</div><textarea class="bp-entry-trigger" rows="2" placeholder="e.g. Well child check or health maintenance discussed" oninput="updateBpField(${idx},'trigger',this.value)">${escHtml(entry.trigger)}</textarea></div>
+      <div>
+        <div class="bp-field-label">Detection method</div>
+        <select class="settings-select" onchange="updateBpField(${idx},'detectionMode',this.value); renderBoilerplateList();">
+          <option value="regex" ${mode === "regex" ? "selected" : ""}>regex</option>
+          <option value="llm" ${mode === "llm" ? "selected" : ""}>llm</option>
+          <option value="both" ${mode === "both" ? "selected" : ""}>both</option>
+        </select>
+      </div>
+      <div class="bp-keywords-field" style="${mode === "llm" ? "display:none" : ""}">
+        <div class="bp-field-label">Keywords</div>
+        <input class="bp-entry-trigger" type="text" value="${escHtml(entry.keywords || "")}" placeholder="comma-separated terms" oninput="updateBpField(${idx},'keywords',this.value)">
+      </div>
+      <div><div class="bp-field-label">Boilerplate text</div><textarea class="bp-entry-text" rows="4" oninput="updateBpField(${idx},'text',this.value)">${escHtml(entry.text)}</textarea></div>
+      <div class="bp-entry-footer"><button class="bp-btn-delete" onclick="deleteBpEntry(${idx})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>Delete</button></div>
+    </div>`;
+  return div;
+}
+window.toggleBpEntry = (h) => h.closest(".bp-entry").classList.toggle("expanded");
+window.updateBpKey   = (i,v) => { settings.boilerplate[i].key = v.toUpperCase().replace(/[^A-Z0-9_]/g,""); };
+window.updateBpField = (i,f,v) => { settings.boilerplate[i][f] = v; };
+window.deleteBpEntry = (i) => { settings.boilerplate.splice(i,1); renderBoilerplateList(); };
+window.addBoilerplateEntry = function() {
+  settings.boilerplate.push({key:"",trigger:"",text:"",detectionMode:"llm",keywords:""});
+  renderBoilerplateList();
+  const last = document.getElementById("boilerplateList").lastElementChild;
+  if (last) { last.classList.add("expanded"); last.querySelector(".bp-entry-key-input")?.focus(); }
+};
+
+// ─── SmartChart Templates UI ─────────────────────────────────────────────
+function renderTemplateList() {
+  const container = document.getElementById("templateList");
+  if (!container) return;
+  container.innerHTML = "";
+  (settings.templates || []).forEach((entry, idx) => container.appendChild(createTemplateEntryEl(entry, idx)));
+}
+function createTemplateEntryEl(entry, idx) {
+  const div = document.createElement("div");
+  div.className = "bp-entry template-entry";
+  div.dataset.idx = idx;
+  div.innerHTML = `
+    <div class="bp-entry-header" onclick="toggleTemplateEntry(this)">
+      <span class="bp-entry-key-badge">${escHtml(entry.name || "Untitled Template")}</span>
+      <span class="pipeline-entry-source">Priority ${escHtml(entry.priority ?? "")}</span>
+      <span class="bp-entry-toggle"><svg class="bp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
+    </div>
+    <div class="bp-entry-body">
+      <div><div class="bp-field-label">Name</div><input class="bp-entry-trigger" type="text" value="${escHtml(entry.name)}" oninput="updateTemplateField(${idx},'name',this.value)"></div>
+      <div><div class="bp-field-label">Triggers</div><textarea class="bp-entry-trigger" rows="2" oninput="updateTemplateField(${idx},'triggers',this.value)">${escHtml(entry.triggers)}</textarea></div>
+      <div><div class="bp-field-label">Priority</div><input class="bp-entry-trigger" type="number" value="${escHtml(entry.priority)}" oninput="updateTemplateField(${idx},'priority',Number(this.value))"></div>
+      <div><div class="bp-field-label">Content</div><textarea class="bp-entry-text" rows="5" oninput="updateTemplateField(${idx},'content',this.value)">${escHtml(entry.content)}</textarea></div>
+      <div class="bp-entry-footer"><button class="bp-btn-delete" onclick="deleteTemplateEntry(${idx})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>Delete</button></div>
+    </div>`;
+  return div;
+}
+window.toggleTemplateEntry = (h) => h.closest(".template-entry").classList.toggle("expanded");
+window.updateTemplateField = (i, f, v) => {
+  if (!settings.templates[i]) return;
+  settings.templates[i][f] = f === "priority" ? Number(v) : v;
+};
+window.deleteTemplateEntry = (i) => { settings.templates.splice(i, 1); renderTemplateList(); handleUnifiedInput(); };
+window.addTemplateEntry = function() {
+  settings.templates.push({
+    id: `template-${Date.now()}`,
+    name: "Untitled Template",
+    triggers: "",
+    content: "",
+    priority: Math.max(0, ...(settings.templates || []).map(t => Number(t.priority) || 0)) + 10
+  });
+  renderTemplateList();
+  const last = document.getElementById("templateList")?.lastElementChild;
+  if (last) { last.classList.add("expanded"); last.querySelector("input")?.focus(); }
+};
+
+// ─── Extra Pipeline Steps UI ──────────────────────────────────────────────
+function makeStepId(prefix = "custom") {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+function renderPipelineStepsList() {
+  const container = document.getElementById("pipelineStepsList");
+  if (!container) return;
+  container.innerHTML = "";
+  (settings.pipelineSteps || []).forEach((step, idx) => container.appendChild(createPipelineStepEl(step, idx)));
+  container.addEventListener("dragover", handlePipelineDragOver);
+  container.addEventListener("drop", handlePipelineDrop);
+}
+function createPipelineStepEl(step, idx) {
+  const div = document.createElement("div");
+  div.className = "pipeline-entry";
+  div.dataset.idx = idx;
+  div.draggable = true;
+  div.addEventListener("dragstart", (e) => {
+    e.dataTransfer.setData("text/plain", String(idx));
+    e.dataTransfer.effectAllowed = "move";
+    div.classList.add("dragging");
+  });
+  div.addEventListener("dragend", () => div.classList.remove("dragging"));
+  div.innerHTML = `
+    <div class="pipeline-entry-header" onclick="togglePipelineEntry(this)">
+      <span class="pipeline-drag-handle" title="Drag to reorder" onclick="event.stopPropagation()">⋮⋮</span>
+      <label class="switch" onclick="event.stopPropagation()">
+        <input type="checkbox" ${step.enabled ? "checked" : ""} onchange="updatePipelineStep(${idx},'enabled',this.checked)">
+        <span class="switch-slider"></span>
+      </label>
+      <input class="pipeline-label-input" type="text" value="${escHtml(step.label)}" placeholder="Step label" spellcheck="false" onclick="event.stopPropagation()" oninput="updatePipelineStep(${idx},'label',this.value)">
+      <span class="pipeline-entry-source">${step.inputSource === "cleanedTranscript" ? "Cleaned transcript" : "Note output"}</span>
+      <span class="bp-entry-toggle"><svg class="bp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
+    </div>
+    <div class="pipeline-entry-body">
+      <label class="bp-field-label" for="pipelineInputSource${idx}">Input source</label>
+      <select class="settings-select pipeline-source-select" id="pipelineInputSource${idx}" onchange="updatePipelineStep(${idx},'inputSource',this.value)">
+        <option value="noteOutput" ${step.inputSource === "noteOutput" ? "selected" : ""}>Structured note output</option>
+        <option value="cleanedTranscript" ${step.inputSource === "cleanedTranscript" ? "selected" : ""}>Cleaned transcript</option>
+      </select>
+      <div>
+        <div class="bp-field-label">Prompt</div>
+        <textarea class="pipeline-prompt-textarea" rows="10" spellcheck="false" oninput="updatePipelineStep(${idx},'prompt',this.value)">${escHtml(step.prompt)}</textarea>
+      </div>
+      <div class="bp-entry-footer">
+        <button class="bp-btn-delete" onclick="deletePipelineStep(${idx})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>Delete</button>
+      </div>
+    </div>`;
+  return div;
+}
+function handlePipelineDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+}
+function handlePipelineDrop(e) {
+  e.preventDefault();
+  const from = Number(e.dataTransfer.getData("text/plain"));
+  if (!Number.isInteger(from)) return;
+  const rows = [...document.querySelectorAll("#pipelineStepsList .pipeline-entry")];
+  const target = e.target.closest(".pipeline-entry");
+  let to = target ? rows.indexOf(target) : settings.pipelineSteps.length - 1;
+  if (to < 0) to = settings.pipelineSteps.length - 1;
+  const targetRect = target?.getBoundingClientRect();
+  if (targetRect && e.clientY > targetRect.top + targetRect.height / 2) to += 1;
+  if (from < to) to -= 1;
+  if (from === to || from < 0 || from >= settings.pipelineSteps.length) return;
+  const [moved] = settings.pipelineSteps.splice(from, 1);
+  settings.pipelineSteps.splice(Math.max(0, to), 0, moved);
+  renderPipelineStepsList();
+}
+function renderPipelineLibrary() {
+  const grid = document.getElementById("pipelineLibraryGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  [...PIPELINE_LIBRARY].sort((a,b) => a.order - b.order).forEach(template => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "pipeline-library-card";
+    card.innerHTML = `
+      <span class="pipeline-library-category">${escHtml(template.category)}</span>
+      <strong>${escHtml(template.title)}</strong>
+      <span>${escHtml(template.description)}</span>
+      <em>${escHtml(template.specialty)}</em>
+    `;
+    card.addEventListener("click", () => addPipelineStepFromTemplate(template));
+    grid.appendChild(card);
+  });
+}
+window.togglePipelineEntry = (h) => h.closest(".pipeline-entry").classList.toggle("expanded");
+window.updatePipelineStep = (i, f, v) => {
+  if (!settings.pipelineSteps[i]) return;
+  settings.pipelineSteps[i][f] = v;
+  if (f === "inputSource") renderPipelineStepsList();
+};
+window.deletePipelineStep = (i) => {
+  settings.pipelineSteps.splice(i, 1);
+  renderPipelineStepsList();
+};
+window.addPipelineStep = function() {
+  settings.pipelineSteps.push({
+    id: makeStepId(),
+    label: "Untitled Step",
+    enabled: false,
+    prompt: "",
+    inputSource: "noteOutput"
+  });
+  renderPipelineStepsList();
+  const last = document.getElementById("pipelineStepsList").lastElementChild;
+  if (last) { last.classList.add("expanded"); last.querySelector(".pipeline-label-input")?.focus(); }
+};
+window.openPipelineLibrary = function() {
+  renderPipelineLibrary();
+  document.getElementById("pipelineLibraryModal").classList.add("open");
+};
+window.closePipelineLibrary = function() {
+  document.getElementById("pipelineLibraryModal").classList.remove("open");
+};
+window.addPipelineStepFromTemplate = function(template) {
+  settings.pipelineSteps.push({
+    id: makeStepId(template.id),
+    label: template.label,
+    enabled: true,
+    prompt: template.prompt,
+    inputSource: template.inputSource
+  });
+  renderPipelineStepsList();
+  closePipelineLibrary();
+  const last = document.getElementById("pipelineStepsList").lastElementChild;
+  if (last) last.classList.add("expanded");
+};
+window.saveSettings = function() {
+  settings.llmModel      = document.getElementById("settingLLMModel").value;
+  settings.whisperModel  = document.getElementById("settingWhisperModel").value;
+  settings.termVocabulary = document.getElementById("settingTermVocabulary").value
+    .split("\n").map(s => s.trim()).filter(Boolean);
+  
+  settings.macros = document.getElementById("settingMacros").value
+    .split("\n")
+    .map(line => {
+      const idx = line.indexOf(":");
+      if (idx !== -1) {
+        return {
+          key: line.slice(0, idx).trim().toLowerCase(),
+          value: line.slice(idx + 1).trim()
+        };
+      }
+      return null;
+    })
+    .filter(m => m && m.key && m.value);
+
+  settings.cleanupPrompt = document.getElementById("settingCleanupPrompt").value;
+  settings.mainPrompt    = document.getElementById("settingMainPrompt").value;
+  settings.pipelineSteps = normalizePipelineSteps(settings.pipelineSteps);
+  settings.templates = (settings.templates || []).map(normalizeSmartChartTemplate);
+  settings.noteTemplate = document.getElementById("settingNoteTemplate").value || SMARTCHART_DEFAULT_NOTE_TEMPLATE;
+  settings.behavior = {
+    ...settings.behavior,
+    smartChartAutoCopyDelay: Math.max(0.5, Math.min(10, Number(document.getElementById("settingSmartCopyDelay").value) || 1.5)),
+    smartChartAutoClearDelay: Math.max(10, Math.min(300, Number(document.getElementById("settingSmartClearDelay").value) || 30))
+  };
+  const ok = saveSettingsToStorage(settings);
+  handleUnifiedInput();
+  const status = document.getElementById("settingsSaveStatus");
+  status.textContent = ok ? "\u2713 Saved \u2014 click Reload Models to apply model changes" : "\u26a0 Could not persist (storage blocked)";
+  status.classList.add("visible");
+  setTimeout(() => status.classList.remove("visible"), 3500);
+};
+window.resetSettings = function() {
+  if (!confirm("Reset all settings to defaults? This cannot be undone.")) return;
+  settings = structuredClone(DEFAULTS);
+  saveSettingsToStorage(settings);
+  populateSettingsUI();
+  const status = document.getElementById("settingsSaveStatus");
+  status.textContent = "\u2713 Reset to defaults \u2014 click Reload Models to apply";
+  status.classList.add("visible");
+  setTimeout(() => status.classList.remove("visible"), 3500);
+};
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && document.getElementById("settingsDrawer").classList.contains("open")) closeSettings();
+});
+
+// ─── Boot ─────────────────────────────────────────────────────────────────
+registerServiceWorker();
+initMacroExpanders();
+initModel();
