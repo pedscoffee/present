@@ -195,7 +195,7 @@ Reference: HHS HIPAA cloud computing guidance: https://www.hhs.gov/hipaa/for-pro
 
 ---
 
-## Suggested IT Approval Language
+## Summary
 
 Present is a browser-based, on-device clinical documentation assistant. It is designed so PHI can remain on the clinician's managed workstation: audio capture, transcription (via local Whisper), AI note generation (via local WebLLM/WebGPU), SmartChart template assembly (in-page JavaScript only), editing, and copying all occur locally in the browser. The tool has no backend database, no patient account system, no analytics, and no cloud AI inference endpoint. For enterprise deployment, dependencies and model files can be self-hosted by the institution to avoid third-party runtime asset loading.
 
