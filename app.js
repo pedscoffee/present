@@ -1205,6 +1205,7 @@ function smartChartPlainText(markdownText) {
   div.querySelectorAll("p, div, li, h1, h2, h3").forEach(el => el.insertAdjacentText("afterend", "\n"));
   return (div.innerText || div.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
 }
+
 function clearSmartChartOutput() {
   currentSmartChartNote = "";
   clearTimeout(smartChartCopyTimer);
@@ -1217,6 +1218,22 @@ function clearSmartChartOutput() {
   if (content) { content.style.display = "none"; content.innerHTML = ""; }
   if (matchInfo) matchInfo.textContent = "Live";
 }
+
+function scheduleSmartChartClear() {
+  clearTimeout(smartChartClearTimer);
+  
+  const input = document.getElementById("unifiedInput")?.value || "";
+  // Do not schedule auto-clear if there's nothing to clear
+  if (!input.trim() && !currentSmartChartNote.trim()) return;
+
+  smartChartClearTimer = setTimeout(() => {
+    const inputEl = document.getElementById("unifiedInput");
+    if (inputEl) inputEl.value = "";
+    clearSmartChartOutput();
+    updateProcessBtn();
+  }, getSmartChartDelays().clearMs);
+}
+
 function scheduleSmartChartCopy() {
   clearTimeout(smartChartCopyTimer);
   const indicator = document.getElementById("smartChartCopyIndicator");
@@ -1233,15 +1250,7 @@ function scheduleSmartChartCopy() {
     } catch {}
   }, getSmartChartDelays().copyMs);
 }
-function scheduleSmartChartClear() {
-  clearTimeout(smartChartClearTimer);
-  smartChartClearTimer = setTimeout(() => {
-    const input = document.getElementById("unifiedInput");
-    if (input) input.value = "";
-    clearSmartChartOutput();
-    updateProcessBtn();
-  }, getSmartChartDelays().clearMs);
-}
+
 function updateSmartChartPreview() {
   const input = document.getElementById("unifiedInput")?.value || "";
   const matches = matchSmartChartTemplates(input);
@@ -1258,6 +1267,7 @@ function updateSmartChartPreview() {
   if (matchInfo) matchInfo.textContent = `${matches.length} matched`;
   scheduleSmartChartCopy();
 }
+
 function handleUnifiedInput() {
   updateProcessBtn();
   clearTimeout(smartChartDebounceTimer);
@@ -1268,11 +1278,13 @@ function handleUnifiedInput() {
     if (currentSmartChartNote.trim()) scheduleSmartChartClear();
   }, 300);
 }
+
 window.copySmartChartOutput = async function() {
   if (!currentSmartChartNote.trim()) return;
   await copyToClipboardRich(smartChartPlainText(currentSmartChartNote), smartChartMarkdownToHtml(currentSmartChartNote));
   showAutocopyToast("\u2713 SmartChart copied");
 };
+
 function getCurrentOutputText() {
   const lines = [];
   for (const node of document.getElementById("outputContent").children) {
@@ -1286,6 +1298,7 @@ function getCurrentOutputText() {
   }
   return lines.join("\n").trim();
 }
+
 function getCurrentOutputHtml() {
   const htmlParts = [];
   for (const node of document.getElementById("outputContent").children) {
@@ -1314,6 +1327,7 @@ function getCurrentOutputHtml() {
   }
   return htmlParts.join("\n").trim();
 }
+
 function getProblemBlockHtml(block) {
   const htmlParts = [];
   const title = block.querySelector(".problem-title");
@@ -1329,15 +1343,18 @@ function getProblemBlockHtml(block) {
   }
   return htmlParts.join("\n");
 }
+
 function getPipelineStepsContainer() {
   return document.getElementById("pipelineStepsOutput");
 }
+
 function resetPipelineStepOutputs() {
   const container = getPipelineStepsContainer();
   if (!container) return;
   container.innerHTML = "";
   container.style.display = "none";
 }
+
 function renderPipelineRichText(raw) {
   function inlineMarkdown(text) {
     return escHtml(text)
@@ -1381,6 +1398,7 @@ function renderPipelineRichText(raw) {
   closeList();
   return html.join("");
 }
+
 function renderPipelineStepOutput(step, text = "", state = "streaming") {
   const container = getPipelineStepsContainer();
   if (!container) return null;
@@ -1423,6 +1441,7 @@ function renderPipelineStepOutput(step, text = "", state = "streaming") {
   copyBtn.onclick = () => copyPipelineStepOutput(step.id, copyBtn);
   return box;
 }
+
 async function copyPipelineStepOutput(stepId, btn) {
   const box = document.querySelector(`[data-step-id="${CSS.escape(stepId)}"]`);
   const textEl = box?.querySelector(".pipeline-step-text");
@@ -1436,6 +1455,7 @@ async function copyPipelineStepOutput(stepId, btn) {
     showAutocopyToast("\u2713 Step copied");
   } catch {}
 }
+
 async function runPipelineStep(step, userContent) {
   let rawText = "";
   renderPipelineStepOutput(step, "", "streaming");
@@ -1463,6 +1483,10 @@ window.processNote = async function() {
   const rawInput = inputEl.value.trim();
   if (!rawInput) return;
   const input = expandMacros(rawInput);
+  
+  // Pause the SmartChart auto-clear timer while generating
+  clearTimeout(smartChartClearTimer); 
+  
   const empty = document.getElementById("outputEmpty");
   const content = document.getElementById("outputContent");
   const streaming = document.getElementById("outputStreaming");
@@ -1477,6 +1501,7 @@ window.processNote = async function() {
   if (btnCopyGroup) btnCopyGroup.style.display = "none";
   editHint.style.display = "none"; streamText.textContent = "";
   document.getElementById("btnProcess").disabled = true;
+  
   try {
     thinkLabel.innerHTML = '<span class="think-dot"></span>Cleaning transcript\u2026';
     const cleanupResponse = await engine.chat.completions.create({
@@ -1533,6 +1558,9 @@ window.processNote = async function() {
     console.error("Generation error:", err);
     streaming.style.display = "none";
     showError("Error generating notes: " + err.message);
+  } finally {
+    // Restart the SmartChart idle auto-clear timer now that generation is finished
+    scheduleSmartChartClear();
   }
   updateProcessBtn();
 };
@@ -1728,6 +1756,43 @@ window.reloadModels = function() {
   closeSettings();
   clearAll();
   initModel().finally(() => { if (note) note.textContent = ""; });
+};
+
+// ─── Import / Export ──────────────────────────────────────────────────────
+window.exportSettings = function() {
+  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(settings, null, 2));
+  const dlAnchorElem = document.createElement('a');
+  dlAnchorElem.setAttribute("href", dataStr);
+  dlAnchorElem.setAttribute("download", "present_settings.json");
+  dlAnchorElem.click();
+  dlAnchorElem.remove();
+};
+
+window.importSettings = function(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const imported = JSON.parse(e.target.result);
+      if (imported && typeof imported === 'object') {
+        settings = { ...settings, ...imported };
+        saveSettingsToStorage(settings);
+        populateSettingsUI();
+        handleUnifiedInput();
+        
+        const status = document.getElementById("settingsSaveStatus");
+        status.textContent = "\u2713 Settings imported successfully";
+        status.classList.add("visible");
+        setTimeout(() => status.classList.remove("visible"), 3500);
+      }
+    } catch (err) {
+      alert("Invalid JSON settings file.");
+      console.error("Import failed:", err);
+    }
+    event.target.value = ''; // Reset input to allow re-importing the same file
+  };
+  reader.readAsText(file);
 };
 
 // ─── Boilerplate UI ───────────────────────────────────────────────────────
@@ -2007,3 +2072,11 @@ document.addEventListener("keydown", (e) => {
 registerServiceWorker();
 initMacroExpanders();
 initModel();
+
+// Global interaction listeners to keep the auto-clear timer fresh while the user is active
+const workspace = document.querySelector(".workspace");
+if (workspace) {
+  workspace.addEventListener("click", scheduleSmartChartClear);
+  workspace.addEventListener("input", scheduleSmartChartClear);
+  workspace.addEventListener("keydown", scheduleSmartChartClear);
+}
