@@ -33,6 +33,7 @@ Present converts spoken or typed clinical assessment and plan dictation into cle
 - **Auto-copy and manual copy** — copy the full note, individual problem blocks, or extra pipeline step outputs.
 - **Copy dropdown** — lists each problem block for targeted copying without scrolling.
 - **Local settings** — prompts, boilerplate, models, terminology, macros, templates, and pipeline steps persist in `localStorage` with automatic migration from previous settings versions.
+- **Settings import/export** — export your settings as a JSON file to share or backup, and import settings from a previously exported file.
 - **Installable PWA** — app shell, dependencies, and fetched model assets are cached for offline local use after first load.
 - **Static deployment** — no backend, no database, no account system, and no cloud AI API.
 
@@ -67,6 +68,26 @@ Always review AI-generated notes before use in the medical record.
 
 ---
 
+## Settings Import/Export
+
+You can now **export** your settings (prompts, boilerplate, templates, macros, terminology, and pipeline steps) as a JSON file to share with colleagues or backup your configuration. To import settings, simply upload a previously exported JSON file.
+
+**How to Export:**
+
+1. Open the **Settings** panel (gear icon).
+2. Click the **Export Settings** button.
+3. A JSON file will be downloaded with all your configurations.
+
+**How to Import:**
+
+1. Open the **Settings** panel (gear icon).
+2. Click the **Import Settings** button.
+3. Select a previously exported JSON file to restore your configurations.
+
+> **Note:** Importing settings will overwrite your current configuration. Ensure you have a backup if needed.
+
+---
+
 ## SmartChart
 
 SmartChart is a live, AI-free panel that assembles template text as you type — no model generation required. It is useful for quickly building boilerplate-heavy note components (well-child checks, supportive care, injury visits) from a short typed one-liner.
@@ -80,6 +101,7 @@ SmartChart is a live, AI-free panel that assembles template text as you type —
 5. The input and output auto-clear after a configurable idle delay (default 30 seconds).
 
 **Copy behavior:**
+
 - SmartChart output auto-copies after the configured delay once a match is found.
 - Click **Copy SmartChart** in the SmartChart panel to copy manually at any time.
 - The copy indicator in the panel header shows when an auto-copy is pending.
@@ -148,6 +170,7 @@ Present can be installed as a local PWA from a trusted HTTPS origin or from `loc
 The app shell is pre-cached by `sw.js`. Runtime dependencies and model files are cached as they are first requested. If you switch to a different model, reconnect once and let that model finish loading before relying on offline use.
 
 **Security notes:**
+
 - Use HTTPS or `localhost`; browsers require a secure context for service workers, microphone access, and WebGPU.
 - The service worker adds no backend, analytics, or remote logging.
 - Patient note text is transient page memory and clipboard content; it is not written to `localStorage`.
@@ -159,20 +182,23 @@ The app shell is pre-cached by `sw.js`. Runtime dependencies and model files are
 
 Open the gear icon in the top-right header to access settings.
 
-| Setting | Description |
-|---|---|
-| Language Model | Selects the local WebLLM model. |
-| Whisper Speech-to-Text Model | Selects the local transcription model. Larger models are more accurate but require more memory and download time. |
-| Medical Terminology | Practice-specific vocabulary used during transcript cleanup. |
-| Shorthand Macros | Dot phrases such as `.aom: acute otitis media`, one per line. |
-| Pass 1 – Transcript Cleanup Prompt | System prompt for cleaning raw dictation. |
-| Pass 2 – Note Generation Prompt | System prompt for generating structured A&P notes. |
-| Extra Pipeline Steps | Post-processing outputs (AVS, billing, teaching, or custom). Enable, disable, reorder by drag, or add from the library. |
-| Boilerplate Entries | Condition-specific text blocks with configurable detection mode (`regex`, `llm`, or `both`) and keyword lists. |
-| SmartChart Templates | Trigger-based content blocks assembled live without AI. Each entry has a name, triggers, content, and priority. |
-| SmartChart Auto-Copy Delay | Seconds before SmartChart output auto-copies (0.5–10s). |
-| SmartChart Auto-Clear Delay | Seconds of idle before input and SmartChart output auto-clear (10–300s). |
-| Note Template | Template controlling how SmartChart assembles `{input}` and `{templates}` into the final output. |
+
+| Setting                            | Description                                                                                                             |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Language Model                     | Selects the local WebLLM model.                                                                                         |
+| Whisper Speech-to-Text Model       | Selects the local transcription model. Larger models are more accurate but require more memory and download time.       |
+| Medical Terminology                | Practice-specific vocabulary used during transcript cleanup.                                                            |
+| Shorthand Macros                   | Dot phrases such as `.aom: acute otitis media`, one per line.                                                           |
+| Pass 1 – Transcript Cleanup Prompt | System prompt for cleaning raw dictation.                                                                               |
+| Pass 2 – Note Generation Prompt    | System prompt for generating structured A&P notes.                                                                      |
+| Extra Pipeline Steps               | Post-processing outputs (AVS, billing, teaching, or custom). Enable, disable, reorder by drag, or add from the library. |
+| Boilerplate Entries                | Condition-specific text blocks with configurable detection mode (`regex`, `llm`, or `both`) and keyword lists.          |
+| SmartChart Templates               | Trigger-based content blocks assembled live without AI. Each entry has a name, triggers, content, and priority.         |
+| SmartChart Auto-Copy Delay         | Seconds before SmartChart output auto-copies (0.5–10s).                                                                 |
+| SmartChart Auto-Clear Delay        | Seconds of idle before input and SmartChart output auto-clear (10–300s).                                                |
+| Note Template                      | Template controlling how SmartChart assembles `{input}` and `{templates}` into the final output.                        |
+| **Import/Export Settings**         | Export or import your configuration as a JSON file.                                                                     |
+
 
 Click **Save & Apply** to persist settings. Model changes require **Reload Models**. **Reset defaults** restores all factory settings.
 
@@ -184,21 +210,25 @@ Settings are stored in browser `localStorage`; avoid placing patient identifiers
 
 ### Language Models (WebLLM / WebGPU)
 
-| Option | Approx. size | Notes |
-|---|---:|---|
-| Gemma 2 2B | ~1.3 GB | Fastest option. |
-| Phi 3.5 Mini | ~2.2 GB | Balanced-light option. |
-| Qwen3 4B | ~2.3 GB | Default balanced option. |
-| Llama 3 8B | ~4.5 GB | Higher quality; requires more memory. |
+
+| Option       | Approx. size | Notes                                 |
+| ------------ | ------------ | ------------------------------------- |
+| Gemma 2 2B   | ~1.3 GB      | Fastest option.                       |
+| Phi 3.5 Mini | ~2.2 GB      | Balanced-light option.                |
+| Qwen3 4B     | ~2.3 GB      | Default balanced option.              |
+| Llama 3 8B   | ~4.5 GB      | Higher quality; requires more memory. |
+
 
 ### Whisper Models (Transformers.js / WASM)
 
-| Option | Approx. size | Notes |
-|---|---:|---|
-| Whisper Tiny | ~75 MB | Fastest, lower accuracy. |
-| Whisper Base | ~145 MB | Lightweight balance. |
-| Whisper Small | ~488 MB | Default recommended option. |
-| Whisper Medium | ~1.5 GB | Best accuracy; requires more memory. |
+
+| Option         | Approx. size | Notes                                |
+| -------------- | ------------ | ------------------------------------ |
+| Whisper Tiny   | ~75 MB       | Fastest, lower accuracy.             |
+| Whisper Base   | ~145 MB      | Lightweight balance.                 |
+| Whisper Small  | ~488 MB      | Default recommended option.          |
+| Whisper Medium | ~1.5 GB      | Best accuracy; requires more memory. |
+
 
 ---
 
@@ -210,11 +240,13 @@ Extra pipeline steps run after the main note is generated. Each enabled step pro
 
 Click **Browse Library** in Settings → Extra Pipeline Steps to add pre-built step templates:
 
-| Template | Category | Input | Description |
-|---|---|---|---|
-| AVS / Sign-Off | Documentation | Note output | Generates 3 personalized sign-off options and an actionable family to-do list. |
-| Billing Analysis | Administrative | Note output | Estimates established-patient E/M coding using 2021 MDM rules with CPT code suggestion. |
-| Teaching – Socratic | Teaching | Note output | Extracts a clinical pearl and asks a Socratic follow-up question. |
+
+| Template            | Category       | Input       | Description                                                                             |
+| ------------------- | -------------- | ----------- | --------------------------------------------------------------------------------------- |
+| AVS / Sign-Off      | Documentation  | Note output | Generates 3 personalized sign-off options and an actionable family to-do list.          |
+| Billing Analysis    | Administrative | Note output | Estimates established-patient E/M coding using 2021 MDM rules with CPT code suggestion. |
+| Teaching – Socratic | Teaching       | Note output | Extracts a clinical pearl and asks a Socratic follow-up question.                       |
+
 
 Custom steps can use either the cleaned transcript or the generated note as input, with fully editable prompts.
 
@@ -226,24 +258,28 @@ Custom steps can use either the cleaned transcript or the generated note as inpu
 
 Each boilerplate entry can be configured with one of three detection modes:
 
-| Mode | Behavior |
-|---|---|
-| `llm` | LLM emits `[BOILERPLATE:KEY]` tags in the note; tag is replaced at render time. |
-| `regex` | Keywords are matched directly against the cleaned transcript; no LLM tag required. |
-| `both` | Keywords pre-detect the condition and hint the LLM; LLM tag or keyword match either trigger injection. |
+
+| Mode    | Behavior                                                                                               |
+| ------- | ------------------------------------------------------------------------------------------------------ |
+| `llm`   | LLM emits `[BOILERPLATE:KEY]` tags in the note; tag is replaced at render time.                        |
+| `regex` | Keywords are matched directly against the cleaned transcript; no LLM tag required.                     |
+| `both`  | Keywords pre-detect the condition and hint the LLM; LLM tag or keyword match either trigger injection. |
+
 
 ### Default Boilerplate Entries
 
-| Key | Default Detection | Trigger |
-|---|---|---|
-| `WCC` | regex | Well child check / health maintenance |
-| `ILLNESS` | both | Illness, infection, virus, fever |
-| `INJURY` | llm | Injury |
-| `OTITIS` | regex | Otitis media / ear infection |
-| `STREP` | regex | Strep throat / rapid strep |
-| `DEHYDRATION` | both | Dehydration, vomiting, diarrhea, decreased urination |
-| `RESP` | llm | Trouble breathing, wheezing, respiratory distress |
-| `PCMH` | regex | ADHD, obesity, weight concern |
+
+| Key           | Default Detection | Trigger                                              |
+| ------------- | ----------------- | ---------------------------------------------------- |
+| `WCC`         | regex             | Well child check / health maintenance                |
+| `ILLNESS`     | both              | Illness, infection, virus, fever                     |
+| `INJURY`      | llm               | Injury                                               |
+| `OTITIS`      | regex             | Otitis media / ear infection                         |
+| `STREP`       | regex             | Strep throat / rapid strep                           |
+| `DEHYDRATION` | both              | Dehydration, vomiting, diarrhea, decreased urination |
+| `RESP`        | llm               | Trouble breathing, wheezing, respiratory distress    |
+| `PCMH`        | regex             | ADHD, obesity, weight concern                        |
+
 
 Boilerplate entries can be added, edited, or deleted in Settings without changing code.
 
@@ -285,12 +321,14 @@ See [SECURITY.md](SECURITY.md) for the data-flow table, network disclosure, PHI 
 
 ## Browser Requirements
 
-| Browser | WebGPU | WASM | Status |
-|---|---|---|---|
-| Chrome 113+ | Yes | Yes | Fully supported |
-| Edge 113+ | Yes | Yes | Fully supported |
-| Safari | Partial | Yes | Experimental / may require flags |
-| Firefox | No | Yes | Not supported for WebGPU LLM inference |
+
+| Browser     | WebGPU  | WASM | Status                                 |
+| ----------- | ------- | ---- | -------------------------------------- |
+| Chrome 113+ | Yes     | Yes  | Fully supported                        |
+| Edge 113+   | Yes     | Yes  | Fully supported                        |
+| Safari      | Partial | Yes  | Experimental / may require flags       |
+| Firefox     | No      | Yes  | Not supported for WebGPU LLM inference |
+
 
 If WebGPU is disabled, try enabling `chrome://flags/#enable-unsafe-webgpu`.
 
@@ -298,16 +336,18 @@ If WebGPU is disabled, try enabling `chrome://flags/#enable-unsafe-webgpu`.
 
 ## Tech Stack
 
-| Component | Library / Technology |
-|---|---|
-| In-browser LLM inference | [WebLLM](https://github.com/mlc-ai/web-llm) + WebGPU |
-| Default language model | Qwen3 4B MLC variant |
-| Speech-to-text | [Transformers.js](https://github.com/huggingface/transformers.js) + Whisper |
-| Markdown rendering | [marked](https://github.com/markedjs/marked) |
-| Frontend | Vanilla HTML, CSS, and JavaScript ES modules |
-| Persistence | Browser `localStorage` for settings (auto-migrates from v1/v2) |
-| Acceleration | WebGPU for LLM, WASM for Whisper |
-| Offline | PWA service worker (`sw.js`) |
+
+| Component                | Library / Technology                                                        |
+| ------------------------ | --------------------------------------------------------------------------- |
+| In-browser LLM inference | [WebLLM](https://github.com/mlc-ai/web-llm) + WebGPU                        |
+| Default language model   | Qwen3 4B MLC variant                                                        |
+| Speech-to-text           | [Transformers.js](https://github.com/huggingface/transformers.js) + Whisper |
+| Markdown rendering       | [marked](https://github.com/markedjs/marked)                                |
+| Frontend                 | Vanilla HTML, CSS, and JavaScript ES modules                                |
+| Persistence              | Browser `localStorage` for settings (auto-migrates from v1/v2)              |
+| Acceleration             | WebGPU for LLM, WASM for Whisper                                            |
+| Offline                  | PWA service worker (`sw.js`)                                                |
+
 
 ---
 
