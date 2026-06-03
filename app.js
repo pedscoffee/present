@@ -1223,14 +1223,14 @@ function scheduleSmartChartClear() {
   clearTimeout(smartChartClearTimer);
   
   const input = document.getElementById("unifiedInput")?.value || "";
-  // Do not schedule auto-clear if there's nothing to clear
-  if (!input.trim() && !currentSmartChartNote.trim()) return;
+  const aiNoteText = window._rawOutput || "";
+  
+  // Do not schedule auto-clear if there's absolutely nothing to clear
+  if (!input.trim() && !currentSmartChartNote.trim() && !aiNoteText.trim()) return;
 
   smartChartClearTimer = setTimeout(() => {
-    const inputEl = document.getElementById("unifiedInput");
-    if (inputEl) inputEl.value = "";
-    clearSmartChartOutput();
-    updateProcessBtn();
+    // Clear everything: input, smart chart, and AI output
+    clearAll();
   }, getSmartChartDelays().clearMs);
 }
 
