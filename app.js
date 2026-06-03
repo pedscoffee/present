@@ -474,7 +474,6 @@ Well Child Check
 const STORAGE_KEY = "present_settings_v3";
 const LEGACY_STORAGE_KEY = "present_settings_v2";
 const V1_STORAGE_KEY = "present_settings_v1";
-const SETTINGS_EXPORT_VERSION = 1;
 function normalizePipelineSteps(steps) {
   if (!Array.isArray(steps)) return structuredClone(DEFAULTS.pipelineSteps);
   return steps.map((step, idx) => ({
@@ -518,26 +517,6 @@ function loadSettings() {
 function saveSettingsToStorage(s) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); return true; }
   catch { return false; }
-}
-
-function buildSettingsExportPayload(sourceSettings = settings) {
-  const safeSettings = structuredClone(sourceSettings || DEFAULTS);
-  return {
-    app: "present",
-    type: "settings-export",
-    version: SETTINGS_EXPORT_VERSION,
-    exportedAt: new Date().toISOString(),
-    settings: safeSettings
-  };
-}
-
-function parseImportedSettings(rawText) {
-  const parsed = JSON.parse(rawText);
-  const candidate = parsed && typeof parsed === "object" && parsed.settings && typeof parsed.settings === "object"
-    ? parsed.settings
-    : parsed;
-  const hydrated = hydrateSettings(candidate || {});
-  return { parsed, hydrated };
 }
 let settings = loadSettings();
 
@@ -623,25 +602,6 @@ let isLLMReady = false, isWhisperReady = false, isModelReady = false;
 let isRecording = false, mediaRecorder = null, audioChunks = [], recordingStream = null;
 let transcript = "", timerInterval = null, timerSeconds = 0;
 let smartChartDebounceTimer = null, smartChartCopyTimer = null, smartChartClearTimer = null;
-let llmActivityUntil = 0;
-const LLM_ACTIVITY_GRACE_MS = 15000;
-
-function markAppInteraction(source = "general") {
-  if (source === "llm") {
-    llmActivityUntil = Date.now() + LLM_ACTIVITY_GRACE_MS;
-  }
-  if (currentSmartChartNote) scheduleSmartChartClear();
-}
-
-function markLLMActivity() {
-  markAppInteraction("llm");
-}
-
-function isLLMBusyOrRecentlyActive() {
-  const streamingVisible = document.getElementById("outputStreaming")?.style.display !== "none";
-  const processingDisabled = document.getElementById("btnProcess")?.disabled;
-  return Boolean(streamingVisible || processingDisabled || Date.now() < llmActivityUntil);
-}
 let currentSmartChartNote = "";
 
 // ─── Chunked transcription constants ─────────────────────────────────────
@@ -683,7 +643,6 @@ async function registerServiceWorker() {
     registration.update().catch(() => {});
     await checkOfflineReadiness();
   } catch (err) {
-    llmActivityUntil = 0;
     console.error("Service worker registration failed:", err);
     setPwaStatus("error", "Cache unavailable");
   }
@@ -1499,7 +1458,6 @@ async function runPipelineStep(step, userContent) {
 
 // ─── Process Note ─────────────────────────────────────────────────────────
 window.processNote = async function() {
-  markLLMActivity();
   if (!isModelReady || !engine) return;
   const inputEl = document.getElementById("unifiedInput");
   const rawInput = inputEl.value.trim();
@@ -2049,69 +2007,3 @@ document.addEventListener("keydown", (e) => {
 registerServiceWorker();
 initMacroExpanders();
 initModel();
-
-window.exportSettings = function() {
-  markAppInteraction();
-  try {
-    const payload = buildSettingsExportPayload(settings);
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `present-settings-${stamp}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showSettingsStatus("Settings exported.", false, true);
-  } catch {
-    showSettingsStatus("Export failed.", true, true);
-  }
-};
-
-window.triggerSettingsImport = function() {
-  markAppInteraction();
-  const input = document.getElementById("settingsImportInput");
-  if (!input) return;
-  input.value = "";
-  input.click();
-};
-
-window.importSettingsFile = async function(file) {
-  if (!file) return;
-  markAppInteraction();
-  try {
-    const text = await file.text();
-    const { hydrated } = parseImportedSettings(text);
-    settings = hydrated;
-    saveSettingsToStorage(settings);
-    syncSettingsFormFromState();
-    renderPipelineStepsEditor();
-    refreshPipelineLibrary();
-    updateSmartChartPreview();
-    refreshModelStatusText();
-    showSettingsStatus("Settings imported. Click Reload Models if you changed model selections.", false, true);
-  } catch {
-    showSettingsStatus("Import failed. Use a valid Present settings JSON file.", true, true);
-  }
-};
-
-
-document.addEventListener("pointerdown", (event) => {
-  if (event.target?.closest?.(".panel-output, .settings-drawer, .panel-smartchart, .panel-input, header")) {
-    markAppInteraction();
-  }
-});
-
-document.addEventListener("keydown", (event) => {
-  if (event.metaKey || event.ctrlKey || event.altKey) return;
-  const active = document.activeElement;
-  if (active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) {
-    markAppInteraction();
-    return;
-  }
-  if (["Tab", "Enter", " ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
-    markAppInteraction();
-  }
-});

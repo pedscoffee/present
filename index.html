@@ -56,14 +56,6 @@
       <span class="panel-label">CONFIG</span>
       <h2>Settings</h2>
       <div class="settings-header-actions">
-        <button class="settings-btn-reset" id="btnExportSettings" onclick="exportSettings()" title="Export settings to a JSON file">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
-          Export
-        </button>
-        <button class="settings-btn-reset" id="btnImportSettings" onclick="triggerSettingsImport()" title="Import settings from a JSON file">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 3h14"/></svg>
-          Import
-        </button>
         <button class="settings-btn-reset" id="btnResetSettings" onclick="resetSettings()" title="Reset all to defaults">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
           Reset defaults
@@ -419,7 +411,6 @@
     <a href="https://github.com/pedscoffee/ideal-guacamole" target="_blank" rel="noopener noreferrer">Open Source</a>
   </footer>
 
-  <input type="file" id="settingsImportInput" accept="application/json,.json" hidden />
   <script type="module" src="app.js"></script>
 </body>
 </html>
