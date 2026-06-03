@@ -278,6 +278,18 @@ const SMARTCHART_DEFAULT_TEMPLATES = [
     priority: 9
   },
   {
+    id: "days-of-illness",
+    name: "Days of Illness",
+    triggers: "illness, sick, fever, days",
+    type: "input",
+    inputConfig: {
+      prefix: "Symptoms ongoing for ",
+      suffix: " days.",
+      placeholder: "e.g., 3"
+    },
+    priority: 15
+  },
+  {
     id: "follow-up-dropdown",
     name: "Follow-Up Dropdown",
     triggers: "follow up, follow-up, followup",
@@ -333,6 +345,11 @@ function normalizeSmartChartTemplate(template, idx = 0) {
     format: "comma",
     options: []
   };
+  const inputConfig = template.inputConfig || fallback.inputConfig || {
+    prefix: "",
+    suffix: "",
+    placeholder: ""
+  };
 
   return {
     id: String(template.id || fallback.id || `template-${Date.now()}-${idx}`),
@@ -341,7 +358,8 @@ function normalizeSmartChartTemplate(template, idx = 0) {
     content: String(template.content ?? fallback.content ?? ""),
     priority: Number.isFinite(Number(template.priority)) ? Number(template.priority) : Number(fallback.priority ?? idx + 1),
     type,
-    dropdownConfig
+    dropdownConfig,
+    inputConfig
   };
 }
 
@@ -627,7 +645,7 @@ let isRecording = false, mediaRecorder = null, audioChunks = [], recordingStream
 let transcript = "", timerInterval = null, timerSeconds = 0;
 let smartChartDebounceTimer = null, smartChartCopyTimer = null, smartChartClearTimer = null;
 let currentSmartChartNote = "";
-let smartChartDropdownStates = {};
+let smartChartWidgetStates = {};
 let smartChartInstanceCounter = 0;
 
 // ─── Chunked transcription constants ─────────────────────────────────────
@@ -1215,13 +1233,20 @@ function matchSmartChartTemplates(input) {
     .sort((a, b) => Number(a.priority ?? 99) - Number(b.priority ?? 99));
 }
 
-function instantiateDropdown(template) {
-  const id = `dd_${++smartChartInstanceCounter}`;
-  smartChartDropdownStates[id] = {
-    template: template,
-    selected: template.dropdownConfig.options.filter(o => o.default).map(o => o.label)
-  };
-  return `__DROPDOWN_${id}__`;
+function instantiateWidget(template) {
+  const id = `wd_${++smartChartInstanceCounter}`;
+  if (template.type === 'dropdown') {
+    smartChartWidgetStates[id] = {
+      template: template,
+      selected: template.dropdownConfig.options.filter(o => o.default).map(o => o.label)
+    };
+  } else if (template.type === 'input') {
+    smartChartWidgetStates[id] = {
+      template: template,
+      value: ""
+    };
+  }
+  return `__WIDGET_${id}__`;
 }
 
 // Recursively processes {{Template Name}} inclusions to support nesting
@@ -1229,8 +1254,8 @@ function resolveTemplateContent(template, visited) {
   if (visited.has(template.id)) return ""; 
   visited.add(template.id);
 
-  if (template.type === "dropdown") {
-    return instantiateDropdown(template);
+  if (template.type === "dropdown" || template.type === "input") {
+    return instantiateWidget(template);
   } else {
     let text = template.content || "";
     return text.replace(/\{\{([^}]+)\}\}/g, (match, name) => {
@@ -1244,7 +1269,7 @@ function resolveTemplateContent(template, visited) {
 }
 
 function assembleSmartChartNote(input, matches) {
-  smartChartDropdownStates = {};
+  smartChartWidgetStates = {};
   smartChartInstanceCounter = 0;
   
   const templateTexts = matches.map(t => resolveTemplateContent(t, new Set())).filter(Boolean);
@@ -1263,13 +1288,13 @@ function assembleSmartChartNote(input, matches) {
 }
 
 function renderDropdownUI(id, state) {
-  const config = state.template.dropdownConfig;
-  let html = `<div class="sc-dropdown-widget" data-dd-id="${id}">`;
+  const config = state.template.dropdownConfig || {};
+  let html = `<div class="sc-dropdown-widget" data-widget-id="${id}">`;
   html += `<strong class="sc-dropdown-label">${escHtml(state.template.name)}</strong>`;
 
   if (config.multiSelect) {
     html += `<div class="sc-dropdown-multi">`;
-    config.options.forEach(opt => {
+    (config.options || []).forEach(opt => {
       const checked = state.selected.includes(opt.label) ? "checked" : "";
       html += `<label class="sc-dropdown-check"><input type="checkbox" value="${escHtml(opt.label)}" ${checked}> ${escHtml(opt.label)}</label>`;
     });
@@ -1277,7 +1302,7 @@ function renderDropdownUI(id, state) {
   } else {
     html += `<select class="sc-dropdown-select">`;
     html += `<option value="" disabled ${state.selected.length === 0 ? "selected" : ""}>Select...</option>`;
-    config.options.forEach(opt => {
+    (config.options || []).forEach(opt => {
       const selected = state.selected.includes(opt.label) ? "selected" : "";
       html += `<option value="${escHtml(opt.label)}" ${selected}>${escHtml(opt.label)}</option>`;
     });
@@ -1287,28 +1312,50 @@ function renderDropdownUI(id, state) {
   return html;
 }
 
-function attachDropdownListeners(container) {
+function renderInputUI(id, state) {
+  const config = state.template.inputConfig || {};
+  let html = `<div class="sc-dropdown-widget" data-widget-id="${id}">`;
+  html += `<strong class="sc-dropdown-label">${escHtml(state.template.name)}</strong>`;
+  html += `<div style="display:flex; align-items:center; gap:0.5rem; font-size:0.82rem; color:var(--text-bright);">`;
+  if (config.prefix) html += `<span>${escHtml(config.prefix)}</span>`;
+  html += `<input type="text" class="sc-dropdown-select" style="width:auto; flex:1;" placeholder="${escHtml(config.placeholder || '')}" value="${escHtml(state.value || '')}">`;
+  if (config.suffix) html += `<span>${escHtml(config.suffix)}</span>`;
+  html += `</div></div>`;
+  return html;
+}
+
+function attachWidgetListeners(container) {
   container.querySelectorAll('.sc-dropdown-widget').forEach(widget => {
-    const id = widget.dataset.ddId;
-    const state = smartChartDropdownStates[id];
+    const id = widget.dataset.widgetId;
+    const state = smartChartWidgetStates[id];
     if (!state) return;
 
-    if (state.template.dropdownConfig.multiSelect) {
-      widget.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-        cb.addEventListener('change', () => {
-          if (cb.checked) {
-            if (!state.selected.includes(cb.value)) state.selected.push(cb.value);
-          } else {
-            state.selected = state.selected.filter(v => v !== cb.value);
-          }
-          scheduleSmartChartCopy();
+    if (state.template.type === 'dropdown') {
+      if (state.template.dropdownConfig.multiSelect) {
+        widget.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+          cb.addEventListener('change', () => {
+            if (cb.checked) {
+              if (!state.selected.includes(cb.value)) state.selected.push(cb.value);
+            } else {
+              state.selected = state.selected.filter(v => v !== cb.value);
+            }
+            scheduleSmartChartCopy();
+          });
         });
-      });
-    } else {
-      const select = widget.querySelector('select');
-      if (select) {
-        select.addEventListener('change', () => {
-          state.selected = [select.value];
+      } else {
+        const select = widget.querySelector('select');
+        if (select) {
+          select.addEventListener('change', () => {
+            state.selected = [select.value];
+            scheduleSmartChartCopy();
+          });
+        }
+      }
+    } else if (state.template.type === 'input') {
+      const input = widget.querySelector('input[type="text"]');
+      if (input) {
+        input.addEventListener('input', () => {
+          state.value = input.value;
           scheduleSmartChartCopy();
         });
       }
@@ -1318,13 +1365,23 @@ function attachDropdownListeners(container) {
 
 function getResolvedSmartChartText() {
   let text = currentSmartChartNote;
-  text = text.replace(/__DROPDOWN_(dd_\d+)__/g, (match, id) => {
-    const state = smartChartDropdownStates[id];
-    if (!state || state.selected.length === 0) return "";
-    const format = state.template.dropdownConfig.format;
-    if (format === "bullet") return "\n" + state.selected.map(s => "- " + s).join("\n");
-    if (format === "inline") return state.selected.join(" ");
-    return state.selected.join(", ");
+  text = text.replace(/__WIDGET_(wd_\d+)__/g, (match, id) => {
+    const state = smartChartWidgetStates[id];
+    if (!state) return "";
+    
+    if (state.template.type === 'dropdown') {
+      if (!state.selected || state.selected.length === 0) return "";
+      const format = state.template.dropdownConfig.format;
+      if (format === "bullet") return "\n" + state.selected.map(s => "- " + s).join("\n");
+      if (format === "inline") return state.selected.join(" ");
+      return state.selected.join(", ");
+    } else if (state.template.type === 'input') {
+      const val = (state.value || "").trim();
+      if (!val) return "***"; 
+      const config = state.template.inputConfig || {};
+      return `${config.prefix || ''}${val}${config.suffix || ''}`;
+    }
+    return "";
   });
   return text.replace(/\n{3,}/g, "\n\n").trim();
 }
@@ -1401,13 +1458,14 @@ function updateSmartChartPreview() {
   content.style.display = "block";
   
   let html = smartChartMarkdownToHtml(currentSmartChartNote);
-  html = html.replace(/__DROPDOWN_(dd_\d+)__/g, (match, id) => {
-    const state = smartChartDropdownStates[id];
-    return state ? renderDropdownUI(id, state) : "";
+  html = html.replace(/__WIDGET_(wd_\d+)__/g, (match, id) => {
+    const state = smartChartWidgetStates[id];
+    if (!state) return "";
+    return state.template.type === 'dropdown' ? renderDropdownUI(id, state) : renderInputUI(id, state);
   });
   
   content.innerHTML = html;
-  attachDropdownListeners(content);
+  attachWidgetListeners(content);
   
   if (matchInfo) matchInfo.textContent = `${matches.length} matched`;
   scheduleSmartChartCopy();
@@ -2014,22 +2072,39 @@ function renderTemplateDropdownConfig(entry, idx) {
   return html;
 }
 
+function renderTemplateInputConfig(entry, idx) {
+  const config = entry.inputConfig || { prefix: "", suffix: "", placeholder: "" };
+  let html = `<div class="sc-dropdown-config">`;
+  html += `<div class="sc-config-row">
+    <input type="text" class="settings-select" style="flex:1" placeholder="Prefix (e.g. 'Temp: ')" value="${escHtml(config.prefix)}" oninput="updateTemplateInput(${idx}, 'prefix', this.value)">
+    <input type="text" class="settings-select" style="flex:1" placeholder="Placeholder (e.g. '102.4')" value="${escHtml(config.placeholder)}" oninput="updateTemplateInput(${idx}, 'placeholder', this.value)">
+    <input type="text" class="settings-select" style="flex:1" placeholder="Suffix (e.g. ' °F')" value="${escHtml(config.suffix)}" oninput="updateTemplateInput(${idx}, 'suffix', this.value)">
+  </div>`;
+  html += `</div>`;
+  return html;
+}
+
 function renderTemplateList() {
   const container = document.getElementById("templateList");
   if (!container) return;
   container.innerHTML = "";
   (settings.templates || []).forEach((entry, idx) => container.appendChild(createTemplateEntryEl(entry, idx)));
 }
+
 function createTemplateEntryEl(entry, idx) {
   const div = document.createElement("div");
   div.className = "bp-entry template-entry";
   div.dataset.idx = idx;
-  const isText = entry.type !== 'dropdown';
+  const isText = entry.type === 'text' || !entry.type;
+  const isDropdown = entry.type === 'dropdown';
+  const isInput = entry.type === 'input';
+  
+  const typeLabel = isText ? "Text" : (isDropdown ? "Dropdown" : "Input Field");
   
   div.innerHTML = `
     <div class="bp-entry-header" onclick="toggleTemplateEntry(this)">
       <span class="bp-entry-key-badge">${escHtml(entry.name || "Untitled Template")}</span>
-      <span class="pipeline-entry-source">${isText ? "Text" : "Dropdown"} | Priority ${escHtml(entry.priority ?? "")}</span>
+      <span class="pipeline-entry-source">${typeLabel} | Priority ${escHtml(entry.priority ?? "")}</span>
       <span class="bp-entry-toggle"><svg class="bp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
     </div>
     <div class="bp-entry-body">
@@ -2040,22 +2115,26 @@ function createTemplateEntryEl(entry, idx) {
         <div style="flex:1"><div class="bp-field-label">Type</div>
           <select class="settings-select" onchange="updateTemplateType(${idx}, this.value)">
             <option value="text" ${isText ? 'selected' : ''}>Static Text</option>
-            <option value="dropdown" ${!isText ? 'selected' : ''}>Dropdown Selection</option>
+            <option value="dropdown" ${isDropdown ? 'selected' : ''}>Dropdown Selection</option>
+            <option value="input" ${isInput ? 'selected' : ''}>Input Field</option>
           </select>
         </div>
         <div style="flex:1"><div class="bp-field-label">Priority</div><input class="bp-entry-trigger" type="number" value="${escHtml(entry.priority)}" oninput="updateTemplateField(${idx},'priority',Number(this.value))"></div>
       </div>
       
       ${isText ? 
-        `<div><div class="bp-field-label">Content</div><textarea class="bp-entry-text" rows="5" oninput="updateTemplateField(${idx},'content',this.value)" placeholder="To nest a dropdown, use {{Dropdown Name}}">${escHtml(entry.content)}</textarea></div>` 
-        : 
+        `<div><div class="bp-field-label">Content</div><textarea class="bp-entry-text" rows="5" oninput="updateTemplateField(${idx},'content',this.value)" placeholder="To nest a widget, use {{Widget Name}}">${escHtml(entry.content)}</textarea></div>` 
+        : isDropdown ? 
         `<div><div class="bp-field-label">Dropdown Configuration</div>${renderTemplateDropdownConfig(entry, idx)}</div>`
+        : 
+        `<div><div class="bp-field-label">Input Field Configuration</div>${renderTemplateInputConfig(entry, idx)}</div>`
       }
       
       <div class="bp-entry-footer"><button class="bp-btn-delete" onclick="deleteTemplateEntry(${idx})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>Delete</button></div>
     </div>`;
   return div;
 }
+
 window.toggleTemplateEntry = (h) => h.closest(".template-entry").classList.toggle("expanded");
 window.updateTemplateField = (i, f, v) => {
   if (!settings.templates[i]) return;
@@ -2076,7 +2155,7 @@ window.addTemplateEntry = function() {
   if (last) { last.classList.add("expanded"); last.querySelector("input")?.focus(); }
 };
 
-// Dropdown Helper Functions
+// Dropdown & Input Helper Functions
 function preserveRenderTemplateList(idxToKeepExpanded) {
   const wasExpanded = document.querySelector(`.template-entry[data-idx="${idxToKeepExpanded}"]`)?.classList.contains('expanded');
   renderTemplateList();
@@ -2088,24 +2167,38 @@ window.updateTemplateType = (i, val) => {
   settings.templates[i].type = val;
   if (val === 'dropdown' && !settings.templates[i].dropdownConfig) {
     settings.templates[i].dropdownConfig = { multiSelect: false, format: "comma", options: [] };
+  } else if (val === 'input' && !settings.templates[i].inputConfig) {
+    settings.templates[i].inputConfig = { prefix: "", suffix: "", placeholder: "" };
   }
   preserveRenderTemplateList(i);
 };
+
 window.updateTemplateDropdown = (i, key, val) => {
   settings.templates[i].dropdownConfig[key] = val;
   preserveRenderTemplateList(i);
 };
+
 window.updateTemplateOption = (tIdx, oIdx, key, val) => {
   settings.templates[tIdx].dropdownConfig.options[oIdx][key] = val;
-  handleUnifiedInput(); // Re-render preview immediately for text changes
+  handleUnifiedInput(); 
 };
+
 window.deleteTemplateOption = (tIdx, oIdx) => {
   settings.templates[tIdx].dropdownConfig.options.splice(oIdx, 1);
   preserveRenderTemplateList(tIdx);
 };
+
 window.addTemplateOption = (tIdx) => {
   settings.templates[tIdx].dropdownConfig.options.push({ label: "New Option", default: false });
   preserveRenderTemplateList(tIdx);
+};
+
+window.updateTemplateInput = (i, key, val) => {
+  if (!settings.templates[i].inputConfig) {
+    settings.templates[i].inputConfig = { prefix: "", suffix: "", placeholder: "" };
+  }
+  settings.templates[i].inputConfig[key] = val;
+  handleUnifiedInput();
 };
 
 // ─── Extra Pipeline Steps UI ──────────────────────────────────────────────
