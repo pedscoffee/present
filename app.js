@@ -281,21 +281,7 @@ const SMARTCHART_DEFAULT_TEMPLATES = [
     id: "follow-up-dropdown",
     name: "Follow-Up Dropdown",
     triggers: "follow up, follow-up, followup",
-    type: "dropdown",
-    dropdownConfig: {
-      multiSelect: false,
-      format: "inline",
-      options: [
-        { label: "Follow up as needed.", default: true },
-        { label: "Follow up in 2-3 days.", default: false },
-        { label: "Follow up in 2-4 weeks.", default: false },
-        { label: "Follow up in a month.", default: false },
-        { label: "Follow up in 3 months.", default: false },
-        { label: "Follow up in 3-6 months.", default: false },
-        { label: "Follow up in 1 year.", default: false },
-        { label: "Follow up at next regularly scheduled check up or as needed.", default: false }
-      ]
-    },
+    content: "Follow-Up:\n- Follow up as needed.\n- Follow up in 2-3 days.\n- Follow up in 2-4 weeks.\n- Follow up in a month.\n- Follow up in 3 months.\n- Follow up in 3-6 months.\n- Follow up in 1 year.\n- Follow up at next regularly scheduled check up or as needed.",
     priority: 20
   }
 ];
@@ -326,22 +312,12 @@ function normalizeSmartChartTemplate(template, idx = 0) {
   const triggers = Array.isArray(template.triggers)
     ? template.triggers.join(", ")
     : String(template.triggers ?? fallback.triggers ?? "");
-    
-  const type = template.type || fallback.type || "text";
-  const dropdownConfig = template.dropdownConfig || fallback.dropdownConfig || {
-    multiSelect: false,
-    format: "comma",
-    options: []
-  };
-
   return {
     id: String(template.id || fallback.id || `template-${Date.now()}-${idx}`),
     name: String(template.name || fallback.name || "Untitled Template"),
     triggers,
     content: String(template.content ?? fallback.content ?? ""),
-    priority: Number.isFinite(Number(template.priority)) ? Number(template.priority) : Number(fallback.priority ?? idx + 1),
-    type,
-    dropdownConfig
+    priority: Number.isFinite(Number(template.priority)) ? Number(template.priority) : Number(fallback.priority ?? idx + 1)
   };
 }
 
@@ -627,8 +603,6 @@ let isRecording = false, mediaRecorder = null, audioChunks = [], recordingStream
 let transcript = "", timerInterval = null, timerSeconds = 0;
 let smartChartDebounceTimer = null, smartChartCopyTimer = null, smartChartClearTimer = null;
 let currentSmartChartNote = "";
-let smartChartDropdownStates = {};
-let smartChartInstanceCounter = 0;
 
 // ─── Chunked transcription constants ─────────────────────────────────────
 // Whisper has a hard 30-second context window. We slice decoded 16kHz Float32
@@ -1214,121 +1188,13 @@ function matchSmartChartTemplates(input) {
     .filter(template => splitKeywords(template.triggers).some(trigger => lower.includes(trigger.toLowerCase())))
     .sort((a, b) => Number(a.priority ?? 99) - Number(b.priority ?? 99));
 }
-
-function instantiateDropdown(template) {
-  const id = `dd_${++smartChartInstanceCounter}`;
-  smartChartDropdownStates[id] = {
-    template: template,
-    selected: template.dropdownConfig.options.filter(o => o.default).map(o => o.label)
-  };
-  return `__DROPDOWN_${id}__`;
-}
-
-// Recursively processes {{Template Name}} inclusions to support nesting
-function resolveTemplateContent(template, visited) {
-  if (visited.has(template.id)) return ""; 
-  visited.add(template.id);
-
-  if (template.type === "dropdown") {
-    return instantiateDropdown(template);
-  } else {
-    let text = template.content || "";
-    return text.replace(/\{\{([^}]+)\}\}/g, (match, name) => {
-      const refTemplate = (settings.templates || []).find(t => String(t.name).toLowerCase() === name.toLowerCase().trim());
-      if (refTemplate) {
-        return resolveTemplateContent(refTemplate, new Set(visited));
-      }
-      return match;
-    });
-  }
-}
-
 function assembleSmartChartNote(input, matches) {
-  smartChartDropdownStates = {};
-  smartChartInstanceCounter = 0;
-  
-  const templateTexts = matches.map(t => resolveTemplateContent(t, new Set())).filter(Boolean);
-  let note = String(settings.noteTemplate || SMARTCHART_DEFAULT_NOTE_TEMPLATE)
+  const templateText = matches.map(t => String(t.content || "").trim()).filter(Boolean).join("\n\n");
+  return String(settings.noteTemplate || SMARTCHART_DEFAULT_NOTE_TEMPLATE)
     .replace(/\{input\}/g, input)
-    .replace(/\{templates\}/g, templateTexts.join("\n\n"));
-    
-  // Resolve any top-level {{Template Name}} macros present in the note wrapper itself
-  note = note.replace(/\{\{([^}]+)\}\}/g, (match, name) => {
-    const refTemplate = (settings.templates || []).find(t => String(t.name).toLowerCase() === name.toLowerCase().trim());
-    if (refTemplate) return resolveTemplateContent(refTemplate, new Set());
-    return match;
-  });
-  
-  return note;
+    .replace(/\{templates\}/g, templateText)
+    .replace(/\{static:([^}]*)\}/g, (_, text) => String(text || "").replace(/<br\s*\/?>/gi, "\n"));
 }
-
-function renderDropdownUI(id, state) {
-  const config = state.template.dropdownConfig;
-  let html = `<div class="sc-dropdown-widget" data-dd-id="${id}">`;
-  html += `<strong class="sc-dropdown-label">${escHtml(state.template.name)}</strong>`;
-
-  if (config.multiSelect) {
-    html += `<div class="sc-dropdown-multi">`;
-    config.options.forEach(opt => {
-      const checked = state.selected.includes(opt.label) ? "checked" : "";
-      html += `<label class="sc-dropdown-check"><input type="checkbox" value="${escHtml(opt.label)}" ${checked}> ${escHtml(opt.label)}</label>`;
-    });
-    html += `</div>`;
-  } else {
-    html += `<select class="sc-dropdown-select">`;
-    html += `<option value="" disabled ${state.selected.length === 0 ? "selected" : ""}>Select...</option>`;
-    config.options.forEach(opt => {
-      const selected = state.selected.includes(opt.label) ? "selected" : "";
-      html += `<option value="${escHtml(opt.label)}" ${selected}>${escHtml(opt.label)}</option>`;
-    });
-    html += `</select>`;
-  }
-  html += `</div>`;
-  return html;
-}
-
-function attachDropdownListeners(container) {
-  container.querySelectorAll('.sc-dropdown-widget').forEach(widget => {
-    const id = widget.dataset.ddId;
-    const state = smartChartDropdownStates[id];
-    if (!state) return;
-
-    if (state.template.dropdownConfig.multiSelect) {
-      widget.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-        cb.addEventListener('change', () => {
-          if (cb.checked) {
-            if (!state.selected.includes(cb.value)) state.selected.push(cb.value);
-          } else {
-            state.selected = state.selected.filter(v => v !== cb.value);
-          }
-          scheduleSmartChartCopy();
-        });
-      });
-    } else {
-      const select = widget.querySelector('select');
-      if (select) {
-        select.addEventListener('change', () => {
-          state.selected = [select.value];
-          scheduleSmartChartCopy();
-        });
-      }
-    }
-  });
-}
-
-function getResolvedSmartChartText() {
-  let text = currentSmartChartNote;
-  text = text.replace(/__DROPDOWN_(dd_\d+)__/g, (match, id) => {
-    const state = smartChartDropdownStates[id];
-    if (!state || state.selected.length === 0) return "";
-    const format = state.template.dropdownConfig.format;
-    if (format === "bullet") return "\n" + state.selected.map(s => "- " + s).join("\n");
-    if (format === "inline") return state.selected.join(" ");
-    return state.selected.join(", ");
-  });
-  return text.replace(/\n{3,}/g, "\n\n").trim();
-}
-
 function smartChartMarkdownToHtml(markdownText) {
   return sanitizeSmartChartHtml(marked.parse(String(markdownText || ""), { breaks: true }));
 }
@@ -1379,8 +1245,7 @@ function scheduleSmartChartCopy() {
   smartChartCopyTimer = setTimeout(async () => {
     indicator?.classList.remove("visible");
     try {
-      const resolved = getResolvedSmartChartText();
-      await copyToClipboardRich(smartChartPlainText(resolved), smartChartMarkdownToHtml(resolved));
+      await copyToClipboardRich(smartChartPlainText(currentSmartChartNote), smartChartMarkdownToHtml(currentSmartChartNote));
       showAutocopyToast("\u2713 SmartChart copied");
     } catch {}
   }, getSmartChartDelays().copyMs);
@@ -1394,21 +1259,11 @@ function updateSmartChartPreview() {
     clearSmartChartOutput();
     return;
   }
-  
   currentSmartChartNote = assembleSmartChartNote(input.trim(), matches);
   document.getElementById("smartChartEmpty").style.display = "none";
   const content = document.getElementById("smartChartContent");
   content.style.display = "block";
-  
-  let html = smartChartMarkdownToHtml(currentSmartChartNote);
-  html = html.replace(/__DROPDOWN_(dd_\d+)__/g, (match, id) => {
-    const state = smartChartDropdownStates[id];
-    return state ? renderDropdownUI(id, state) : "";
-  });
-  
-  content.innerHTML = html;
-  attachDropdownListeners(content);
-  
+  content.innerHTML = smartChartMarkdownToHtml(currentSmartChartNote);
   if (matchInfo) matchInfo.textContent = `${matches.length} matched`;
   scheduleSmartChartCopy();
 }
@@ -1426,8 +1281,7 @@ function handleUnifiedInput() {
 
 window.copySmartChartOutput = async function() {
   if (!currentSmartChartNote.trim()) return;
-  const resolved = getResolvedSmartChartText();
-  await copyToClipboardRich(smartChartPlainText(resolved), smartChartMarkdownToHtml(resolved));
+  await copyToClipboardRich(smartChartPlainText(currentSmartChartNote), smartChartMarkdownToHtml(currentSmartChartNote));
   showAutocopyToast("\u2713 SmartChart copied");
 };
 
@@ -1989,31 +1843,6 @@ window.addBoilerplateEntry = function() {
 };
 
 // ─── SmartChart Templates UI ─────────────────────────────────────────────
-function renderTemplateDropdownConfig(entry, idx) {
-  const config = entry.dropdownConfig || { multiSelect: false, format: "comma", options: [] };
-  let html = `<div class="sc-dropdown-config">`;
-  html += `<div class="sc-config-row">
-    <label><input type="checkbox" ${config.multiSelect ? "checked" : ""} onchange="updateTemplateDropdown(${idx}, 'multiSelect', this.checked)"> Multi-select</label>
-    <select class="settings-select" style="width:auto;" onchange="updateTemplateDropdown(${idx}, 'format', this.value)">
-      <option value="comma" ${config.format === 'comma' ? 'selected' : ''}>Comma separated</option>
-      <option value="bullet" ${config.format === 'bullet' ? 'selected' : ''}>Bulleted list</option>
-      <option value="inline" ${config.format === 'inline' ? 'selected' : ''}>Inline spacing</option>
-    </select>
-  </div>`;
-  html += `<div class="sc-options-list">`;
-  config.options.forEach((opt, oIdx) => {
-    html += `<div class="sc-option-item">
-      <input type="checkbox" title="Default selected" ${opt.default ? "checked" : ""} onchange="updateTemplateOption(${idx}, ${oIdx}, 'default', this.checked)">
-      <input type="text" class="settings-select" value="${escHtml(opt.label)}" oninput="updateTemplateOption(${idx}, ${oIdx}, 'label', this.value)" placeholder="Option text">
-      <button class="bp-btn-delete" title="Remove Option" onclick="deleteTemplateOption(${idx}, ${oIdx})">✕</button>
-    </div>`;
-  });
-  html += `</div>`;
-  html += `<button class="settings-btn-add" onclick="addTemplateOption(${idx})">+ Add Option</button>`;
-  html += `</div>`;
-  return html;
-}
-
 function renderTemplateList() {
   const container = document.getElementById("templateList");
   if (!container) return;
@@ -2024,34 +1853,17 @@ function createTemplateEntryEl(entry, idx) {
   const div = document.createElement("div");
   div.className = "bp-entry template-entry";
   div.dataset.idx = idx;
-  const isText = entry.type !== 'dropdown';
-  
   div.innerHTML = `
     <div class="bp-entry-header" onclick="toggleTemplateEntry(this)">
       <span class="bp-entry-key-badge">${escHtml(entry.name || "Untitled Template")}</span>
-      <span class="pipeline-entry-source">${isText ? "Text" : "Dropdown"} | Priority ${escHtml(entry.priority ?? "")}</span>
+      <span class="pipeline-entry-source">Priority ${escHtml(entry.priority ?? "")}</span>
       <span class="bp-entry-toggle"><svg class="bp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
     </div>
     <div class="bp-entry-body">
       <div><div class="bp-field-label">Name</div><input class="bp-entry-trigger" type="text" value="${escHtml(entry.name)}" oninput="updateTemplateField(${idx},'name',this.value)"></div>
-      <div><div class="bp-field-label">Triggers (leave blank if strictly used as a nested macro)</div><textarea class="bp-entry-trigger" rows="2" oninput="updateTemplateField(${idx},'triggers',this.value)">${escHtml(entry.triggers)}</textarea></div>
-      
-      <div style="display:flex; gap:1rem;">
-        <div style="flex:1"><div class="bp-field-label">Type</div>
-          <select class="settings-select" onchange="updateTemplateType(${idx}, this.value)">
-            <option value="text" ${isText ? 'selected' : ''}>Static Text</option>
-            <option value="dropdown" ${!isText ? 'selected' : ''}>Dropdown Selection</option>
-          </select>
-        </div>
-        <div style="flex:1"><div class="bp-field-label">Priority</div><input class="bp-entry-trigger" type="number" value="${escHtml(entry.priority)}" oninput="updateTemplateField(${idx},'priority',Number(this.value))"></div>
-      </div>
-      
-      ${isText ? 
-        `<div><div class="bp-field-label">Content</div><textarea class="bp-entry-text" rows="5" oninput="updateTemplateField(${idx},'content',this.value)" placeholder="To nest a dropdown, use {{Dropdown Name}}">${escHtml(entry.content)}</textarea></div>` 
-        : 
-        `<div><div class="bp-field-label">Dropdown Configuration</div>${renderTemplateDropdownConfig(entry, idx)}</div>`
-      }
-      
+      <div><div class="bp-field-label">Triggers</div><textarea class="bp-entry-trigger" rows="2" oninput="updateTemplateField(${idx},'triggers',this.value)">${escHtml(entry.triggers)}</textarea></div>
+      <div><div class="bp-field-label">Priority</div><input class="bp-entry-trigger" type="number" value="${escHtml(entry.priority)}" oninput="updateTemplateField(${idx},'priority',Number(this.value))"></div>
+      <div><div class="bp-field-label">Content</div><textarea class="bp-entry-text" rows="5" oninput="updateTemplateField(${idx},'content',this.value)">${escHtml(entry.content)}</textarea></div>
       <div class="bp-entry-footer"><button class="bp-btn-delete" onclick="deleteTemplateEntry(${idx})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>Delete</button></div>
     </div>`;
   return div;
@@ -2068,44 +1880,11 @@ window.addTemplateEntry = function() {
     name: "Untitled Template",
     triggers: "",
     content: "",
-    type: "text",
     priority: Math.max(0, ...(settings.templates || []).map(t => Number(t.priority) || 0)) + 10
   });
   renderTemplateList();
   const last = document.getElementById("templateList")?.lastElementChild;
   if (last) { last.classList.add("expanded"); last.querySelector("input")?.focus(); }
-};
-
-// Dropdown Helper Functions
-function preserveRenderTemplateList(idxToKeepExpanded) {
-  const wasExpanded = document.querySelector(`.template-entry[data-idx="${idxToKeepExpanded}"]`)?.classList.contains('expanded');
-  renderTemplateList();
-  if (wasExpanded) document.querySelector(`.template-entry[data-idx="${idxToKeepExpanded}"]`)?.classList.add('expanded');
-  handleUnifiedInput();
-}
-
-window.updateTemplateType = (i, val) => {
-  settings.templates[i].type = val;
-  if (val === 'dropdown' && !settings.templates[i].dropdownConfig) {
-    settings.templates[i].dropdownConfig = { multiSelect: false, format: "comma", options: [] };
-  }
-  preserveRenderTemplateList(i);
-};
-window.updateTemplateDropdown = (i, key, val) => {
-  settings.templates[i].dropdownConfig[key] = val;
-  preserveRenderTemplateList(i);
-};
-window.updateTemplateOption = (tIdx, oIdx, key, val) => {
-  settings.templates[tIdx].dropdownConfig.options[oIdx][key] = val;
-  handleUnifiedInput(); // Re-render preview immediately for text changes
-};
-window.deleteTemplateOption = (tIdx, oIdx) => {
-  settings.templates[tIdx].dropdownConfig.options.splice(oIdx, 1);
-  preserveRenderTemplateList(tIdx);
-};
-window.addTemplateOption = (tIdx) => {
-  settings.templates[tIdx].dropdownConfig.options.push({ label: "New Option", default: false });
-  preserveRenderTemplateList(tIdx);
 };
 
 // ─── Extra Pipeline Steps UI ──────────────────────────────────────────────
